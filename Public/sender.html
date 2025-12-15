@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swyft - Send Files</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <button class="back-btn" onclick="goBack()">← Back</button>
+      <div class="logo-small">
+        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft_full_logo_colured" width="200" height="100"></h2>
+      </div>
+    </div>
+
+    <h1 class="h1">Sender</h1>
+
+    <!-- PIN Method -->
+    <div id="pin-method" class="method-section active">
+      <div class="step">
+        <h3><span class="step-number">1</span> Generate PIN Code</h3>
+        <div class="instruction">Generate a 6-digit PIN for easy connection</div>
+        <button onclick="generatePIN()">Generate PIN</button>
+        
+        <div id="pinDisplay" class="pin-display" style="display: none;">
+          <div class="pin-code" id="pinCode">------</div>
+          <p class="pin-instruction">Share this PIN with the receiver</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <h3><span class="step-number">2</span> Wait for Connection</h3>
+        <div class="instruction">Waiting for receiver to enter PIN...</div>
+        <div id="connectionStatus" class="connection-status">
+          <div class="spinner" style="display: none;"></div>
+          <p id="statusText">No connection yet</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- File Transfer Section (shown after connection) -->
+    <div class="step" id="fileTransferSection" style="display: none;">
+      <h3><span class="step-number">3</span> Select and Send File</h3>
+      <div class="file-input-wrapper">
+        <input type="file" id="fileInput" onchange="handleFileSelect()">
+        <label for="fileInput" class="file-label">
+          📁 Click to select a file
+        </label>
+        <div id="fileInfo" class="file-info"></div>
+      </div>
+      <button id="sendBtn" onclick="sendFile()" disabled>Send File</button>
+      
+      <div id="sendProgress" class="progress-container">
+        <div class="progress-bar">
+          <div id="sendProgressFill" class="progress-fill">0%</div>
+        </div>
+        <div id="sendStatus" class="transfer-status"></div>
+      </div>
+    </div>
+
+    <div id="senderStatus" class="status"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="sender.js"></script>
+</body>
+</html>
