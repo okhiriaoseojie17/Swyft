@@ -47,7 +47,7 @@
     </div>
 
     <!-- File Reception Section -->
-    <div class="step">
+    <div class="step" id="receiveFileSection" style="display:none;">
       <h3><span class="step-number">3</span> Receive File</h3>
       <div id="receiveProgress" class="progress-container">
         <div class="progress-bar">
@@ -60,12 +60,13 @@
         <a id="downloadLink" href="#" download>⬇️ Download Received File</a>
       </div>
     </div>
-
+    <button id="receiverCancelBtn" onclick="cancelReceive()" style="background:#f44336; display:none;">❌ Cancel</button>
     <div id="receiverStatus" class="status"></div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="receiver.js"></script>
 </body>
 </html>

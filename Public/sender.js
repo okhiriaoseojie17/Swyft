@@ -6,6 +6,12 @@ let dataChannel;
 let selectedFile = null;
 let socket = io();
 let currentPIN = null;
+let isPaused = false;
+let isCancelled = false;
+let reader = null;
+let isConnected = false;
+let isTransferring = false;
+let sendChunkFn = null;
 
 // ==========================
 // UI Helpers
@@ -16,27 +22,131 @@ function showStatus(message, type) {
   el.className = `status show ${type}`;
 }
 
-function handleFileSelect() {
-  const input = document.getElementById('fileInput');
-  selectedFile = input.files[0];
+function handleFileSelect(isFolder) {
+  const input = isFolder
+    ? document.getElementById('folderInput')
+    : document.getElementById('fileInput');
 
-  if (selectedFile) {
-    const fileInfo = document.getElementById('fileInfo');
-    const sizeMB = (selectedFile.size / (1024 * 1024)).toFixed(2);
-    const sizeGB = (selectedFile.size / (1024 * 1024 * 1024)).toFixed(2);
-    const displaySize = selectedFile.size > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
+  const files = Array.from(input.files);
+  if (!files.length) return;
 
-    fileInfo.innerHTML = `<strong>${selectedFile.name}</strong><br>Size: ${displaySize}`;
-    fileInfo.classList.add('show');  // Ensure it's displayed
+  // Folder → zip
+  if (isFolder) {
+    zipFolder(files);
+    return;
+  } 
 
-    // Enable the send button when the file is selected
+  // Multiple files → zip
+  if (files.length > 1) {
+     zipFolder(files);
+     return;
+   }
+
+   // Single file
+  selectedFile = files[0];
+  updateFileInfo([selectedFile]);
+
+  const fileInfo = document.getElementById('fileInfo');
+  
+  if (files.length === 1) {
+    // Single file
+    const sizeMB = (files[0].size / (1024 * 1024)).toFixed(2);
+    const sizeGB = (files[0].size / (1024 * 1024 * 1024)).toFixed(2);
+    const displaySize = files[0].size > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
+    fileInfo.innerHTML = `<strong>${files[0].name}</strong><br>Size: ${displaySize}`;
+  } else {
+    // Multiple files
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+    const sizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+    const sizeGB = (totalSize / (1024 * 1024 * 1024)).toFixed(2);
+    const displaySize = totalSize > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
+    fileInfo.innerHTML = `<strong>${files.length} files selected</strong><br>Total size: ${displaySize}`;
+  }
+  
+  fileInfo.classList.add('show');
+
+  if (dataChannel && dataChannel.readyState === 'open') {
+    document.getElementById('sendBtn').disabled = false;
+  }
+
+  document.getElementById('sendProgress').classList.add('show');
+
+}
+
+const dropZone = document.querySelector('.file-label');
+
+if (dropZone) {
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('drag-over');
+  });
+
+  dropZone.addEventListener('drop', async e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+
+    // Folder OR multiple files → ZIP
+   if (files.length === 1 && files[0].size === 0) {
+  showStatus(
+    '⚠️ Folder drag not supported. Use "Select Folder" button.',
+    'error'
+  );
+  return;
+}
+
+// Multiple files → ZIP
+if (files.length > 1) {
+  await zipFolder(files);
+  return;
+}
+
+    // Single file
+    selectedFile = files[0];
+    updateFileInfo([selectedFile]);
+
     if (dataChannel && dataChannel.readyState === 'open') {
       document.getElementById('sendBtn').disabled = false;
     }
+  });
+}
 
-    // Ensure the progress bar is shown
-    document.getElementById('sendProgress').classList.add('show');
+// ==========================
+// ZIP FOLDER (GLOBAL)
+// ==========================
+async function zipFolder(files) {
+  showStatus('Zipping files...', 'info');
+
+  const zip = new JSZip();
+
+  for (const file of files) {
+    const path = file.webkitRelativePath || file.name;
+    zip.file(path, file);
   }
+
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+  const zipFile = new File(
+    [zipBlob],
+    'archive.zip',
+    { type: 'application/zip' }
+  );
+
+  selectedFile = zipFile;
+
+  updateFileInfo([zipFile]);
+
+  if (dataChannel && dataChannel.readyState === 'open') {
+    document.getElementById('sendBtn').disabled = false;
+  }
+
+  showStatus('ZIP ready to send', 'success');
 }
 
 // ==========================
@@ -75,6 +185,7 @@ async function generatePIN() {
     });
 
   } catch (err) {
+    isTransferring = false;
     showStatus(err.message, 'error');
   }
 }
@@ -105,6 +216,8 @@ function setupDataChannel() {
 // ==========================
 // File Transfer with Proper Flow Control for Large Files
 function sendFile() {
+  isCancelled = false;
+  isTransferring = true;
   if (!dataChannel || dataChannel.readyState !== 'open') {
     showStatus('❌ Connection not ready!', 'error');
     return;
@@ -124,6 +237,8 @@ function sendFile() {
   // Prepare UI
   document.getElementById('sendProgress').classList.add('show');
   document.getElementById('sendBtn').disabled = true;
+  document.getElementById('pauseBtn').style.display = 'inline-block';
+  document.getElementById('cancelBtn').style.display = 'inline-block';
 
   // Send file metadata first
   const metadata = {
@@ -136,18 +251,24 @@ function sendFile() {
   try {
     dataChannel.send(JSON.stringify(metadata));
   } catch (error) {
+    isTransferring = false;
     showStatus('Error starting transfer: ' + error.message, 'error');
     document.getElementById('sendBtn').disabled = false;
     return;
   }
 
-  const reader = new FileReader();
-
-  function sendChunk() {
+  reader = new FileReader();
+    
+    sendChunkFn = function sendChunk() {
+    if (isCancelled) return;
+    if (isPaused) return;
     if (offset >= file.size) {
       dataChannel.send('EOF');
+      isTransferring = false;
       showStatus('✓ File sent successfully!', 'success');
       document.getElementById('sendBtn').disabled = false;
+      document.getElementById('pauseBtn').style.display = 'none';
+      document.getElementById('cancelBtn').style.display = 'none';
       return;
     }
 
@@ -162,6 +283,8 @@ function sendFile() {
   }
 
   reader.onload = e => {
+    if (isCancelled) return;
+
     try {
       dataChannel.send(e.target.result);
       offset += e.target.result.byteLength;
@@ -180,11 +303,14 @@ function sendFile() {
         `Sent: ${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
 
       // Send next chunk
-      sendChunk();
+      sendChunkFn();
     } catch (err) {
+      isTransferring = false;
+      if (dataChannel.readyState !== 'open') {
       console.error('Send error:', err);
       showStatus('Error sending file: ' + err.message, 'error');
       document.getElementById('sendBtn').disabled = false;
+      }
     }
   };
 
@@ -195,12 +321,14 @@ function sendFile() {
 
   // Backpressure handler
   dataChannel.onbufferedamountlow = () => {
-    sendChunk();
+    if (!isPaused && !isCancelled && sendChunkFn) {
+    sendChunkFn();
+  }
   };
   dataChannel.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB threshold
 
   // Start sending
-  sendChunk();
+  sendChunkFn();
 }
 
 
@@ -219,7 +347,7 @@ function waitForICE(pc) {
 async function applyAnswerFromServer(answer) {
   try {
     await pc.setRemoteDescription(answer);
-
+    isConnected = true;
     // ✅ Show file transfer UI
     document.getElementById('fileTransferSection').style.display = 'block';
 
@@ -233,8 +361,108 @@ async function applyAnswerFromServer(answer) {
       document.getElementById('sendBtn').disabled = false;
     }
   } catch (err) {
+    isTransferring = false;
     console.error('Error applying answer:', err);
     showStatus('Connection error: ' + err.message, 'error');
   }
 }
 
+function goBack() {
+  if (isTransferring) {
+    showStatus('❌ Cannot leave while file transfer is in progress!', 'error');
+    return;
+  }
+  if (isConnected && dataChannel && dataChannel.readyState === 'open') {
+    showStatus('❌ Connection is still active. Close connection first.', 'error');
+    return;
+  }
+  window.location.href = 'index.html';
+}
+
+function togglePause() {
+  isPaused = !isPaused;
+  const btn = document.getElementById('pauseBtn');
+  if (isPaused) {
+    btn.textContent = '▶️ Resume';
+    btn.style.background = '#4caf50';
+    showStatus('Transfer paused', 'info');
+  } else {
+    btn.textContent = '⏸️ Pause';
+    btn.style.background = '#ff9800';
+    showStatus('Resuming transfer...', 'info');
+
+    if (sendChunkFn) {
+      setTimeout(() => sendChunkFn(), 0); // ✅ restart loop
+    }
+  }
+} 
+
+function cancelTransfer() {
+  if (confirm('Are you sure you want to cancel this transfer?')) {
+    isPaused = false;
+    isCancelled = true;
+    isTransferring = false;
+
+    if (reader && reader.readyState === FileReader.LOADING) {
+    reader.abort();
+  }
+
+    // Send cancel signal
+    try {
+      if (dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send('CANCEL');
+      }
+    } catch (e) {
+      console.log('Could not send cancel signal');
+    }
+    // Reset UI
+    document.getElementById('sendProgressFill').style.width = '0%';
+    document.getElementById('sendProgressFill').textContent = '0%';
+    document.getElementById('sendStatus').textContent = '';
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('pauseBtn').style.display = 'none';
+    document.getElementById('cancelBtn').style.display = 'none';
+    
+    showStatus('Transfer cancelled', 'info');
+  
+  }
+}
+
+function copyPIN() {
+  if (!currentPIN) return;
+  navigator.clipboard.writeText(currentPIN);
+  showStatus('PIN copied to clipboard', 'success');
+}
+
+function sendSingleFile(file, index, total) {
+  const metadata = {
+    type: 'metadata',
+    name: file.name,
+    size: file.size,
+    path: file.webkitRelativePath || file.name,
+    index,
+    total
+  };
+
+  dataChannel.send(JSON.stringify(metadata));
+  // ⬇️ keep your existing chunk logic here unchanged
+}
+
+function updateFileInfo(files) {
+  const fileInfo = document.getElementById('fileInfo');
+
+  if (files.length === 1) {
+    const f = files[0];
+    const sizeMB = (f.size / (1024 * 1024)).toFixed(2);
+    const sizeGB = (f.size / (1024 * 1024 * 1024)).toFixed(2);
+    const displaySize = f.size > 1024 ** 3 ? `${sizeGB} GB` : `${sizeMB} MB`;
+
+    fileInfo.innerHTML = `<strong>${f.name}</strong><br>Size: ${displaySize}`;
+  } else {
+    const totalSize = files.reduce((s, f) => s + f.size, 0);
+    const sizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+    fileInfo.innerHTML = `<strong>${files.length} files</strong><br>Total: ${sizeMB} MB`;
+  }
+
+  fileInfo.classList.add('show');
+}

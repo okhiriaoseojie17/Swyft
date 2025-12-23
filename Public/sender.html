@@ -27,11 +27,12 @@
         <div id="pinDisplay" class="pin-display" style="display: none;">
           <div class="pin-code" id="pinCode">------</div>
           <p class="pin-instruction">Share this PIN with the receiver</p>
+          <button class="copy-btn" onclick="copyPIN()">📋 Copy PIN</button>
         </div>
       </div>
 
       <div class="step">
-        <h3><span class="step-number">2</span> Wait for Connection</h3>
+        <h3>Wait for Connection</h3>
         <div class="instruction">Waiting for receiver to enter PIN...</div>
         <div id="connectionStatus" class="connection-status">
           <div class="spinner" style="display: none;"></div>
@@ -39,18 +40,28 @@
         </div>
       </div>
     </div>
-
+    
     <!-- File Transfer Section (shown after connection) -->
     <div class="step" id="fileTransferSection" style="display: none;">
-      <h3><span class="step-number">3</span> Select and Send File</h3>
+      <h3><span class="step-number">2</span> Select and Send File</h3>
       <div class="file-input-wrapper">
-        <input type="file" id="fileInput" onchange="handleFileSelect()">
+      <input type="file" id="fileInput" multiple onchange="handleFileSelect(false)"style="display:none;">
+
+      <input type="file" id="folderInput" webkitdirectory onchange="handleFileSelect(true)" style="display:none;">
+
+<div class="file-buttons">
+  <button onclick="document.getElementById('fileInput').click()">📄 Select File(s)</button>
+  <button onclick="document.getElementById('folderInput').click()">📁 Select Folder</button>
+</div>
+
         <label for="fileInput" class="file-label">
-          📁 Click to select a file
+          📁 Drag files or folders here, or click to select
         </label>
         <div id="fileInfo" class="file-info"></div>
       </div>
       <button id="sendBtn" onclick="sendFile()" disabled>Send File</button>
+      <button id="pauseBtn" onclick="togglePause()" style="display: none; background: #ff9800; margin-top: 10px;">⏸️ Pause</button>
+      <button id="cancelBtn" onclick="cancelTransfer()" style="display: none; background: #f44336; margin-top: 10px;">❌ Cancel</button>
       
       <div id="sendProgress" class="progress-container">
         <div class="progress-bar">
@@ -65,6 +76,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="sender.js"></script>
 </body>
 </html>

@@ -3,6 +3,8 @@
 // ==========================
 let pc;
 let socket = io();
+let isConnected = false;
+let isReceiving = false;
 
 // ==========================
 // UI Helper
@@ -56,6 +58,7 @@ async function connectWithPIN() {
         if (res.success) {
           document.getElementById('pinWaitingSection').style.display = 'block';
           showStatus('✓ Connected!', 'success');
+          document.getElementById('receiveFileSection').style.display = 'block';
         } else {
           showStatus('Error sending answer: ' + res.message, 'error');
         }
@@ -70,6 +73,8 @@ async function connectWithPIN() {
 // DATA CHANNEL (RECEIVER)
 // ==========================
 function setupReceiverChannel() {
+  isReceiving = true;
+  isConnected = true;
   pc.ondatachannel = (e) => {
     const channel = e.channel;
     channel.binaryType = 'arraybuffer';
@@ -95,6 +100,9 @@ function setupReceiverChannel() {
         received += ev.data.byteLength;
       }
     };
+
+    isReceiving = false;
+
   };
 }
 
@@ -127,10 +135,45 @@ function setupDataChannel() {
     document.getElementById('receiveProgressFill').textContent = '0%';
     document.getElementById('downloadArea').classList.remove('show');
 
-    channel.onmessage = e => {
+    channel.onmessage = async e => {
       if (typeof e.data === 'string') {
+         if (e.data === 'CANCEL') {
+          showStatus('❌ Transfer cancelled by sender', 'error');
+          currentBuffers = [];
+          document.getElementById('receiveProgressFill').style.width = '0%';
+          document.getElementById('receiveProgressFill').textContent = '0%';
+          document.getElementById('receiveStatus').textContent = 'Transfer cancelled';
+          return;
+        }
         if (e.data === 'EOF') {
-          const blob = new Blob(currentBuffers, { type: fileMetadata?.mimeType || 'application/octet-stream' });
+          const blob = new Blob(currentBuffers, {
+  type: fileMetadata?.mimeType || 'application/octet-stream'
+});
+
+if (fileMetadata?.name.endsWith('.zip')) {
+  const zip = await JSZip.loadAsync(blob);
+  const container = document.getElementById('downloadArea');
+  container.innerHTML = '';
+
+  for (const [name, file] of Object.entries(zip.files)) {
+    if (file.dir) continue;
+    const content = await file.async('blob');
+    const url = URL.createObjectURL(content);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.textContent = `Download ${name}`;
+    a.style.display = 'block';
+
+    container.appendChild(a);
+  }
+
+  container.classList.add('show');
+  showStatus('✓ ZIP extracted', 'success');
+  return;
+}
+
           const url = URL.createObjectURL(blob);
           const link = document.getElementById('downloadLink');
           link.href = url;
@@ -142,7 +185,7 @@ function setupDataChannel() {
           showStatus('✓ File received!', 'success');
           document.getElementById('receiveStatus').textContent =
             `Download ready! (${avgSpeed.toFixed(2)} MB/s)`;
-
+          document.getElementById('receiverCancelBtn').style.display = 'none';
           currentBuffers = [];
           return;
         }
@@ -150,15 +193,18 @@ function setupDataChannel() {
         try {
           const data = JSON.parse(e.data);
           if (data.type === 'metadata') {
+            document.getElementById('receiverCancelBtn').style.display = 'inline-block';
             fileMetadata = data;
             expectedSize = data.size;
             receivedSize = 0;
             startTime = Date.now();
             currentBuffers = [];
+            document.getElementById('receiverCancelBtn').style.display = 'block';
             document.getElementById('receiveProgressFill').style.width = '0%';
             document.getElementById('receiveProgressFill').textContent = '0%';
             document.getElementById('downloadArea').classList.remove('show');
-            showStatus(`Receiving: ${data.name}`, 'info');
+            
+            showStatus(`Receiving (${data.index + 1}/${data.total}): ${data.name}`, 'info'); 
           }
         } catch {}
       } else {
@@ -175,4 +221,29 @@ function setupDataChannel() {
     channel.onopen = () => showStatus('✓ Connected! Waiting for file...', 'success');
     channel.onclose = () => showStatus('Connection closed', 'info');
   };
+}
+
+function goBack() {
+  if (isReceiving) {
+    showStatus('❌ Cannot leave while receiving file!', 'error');
+    return;
+  }
+  if (isConnected && pc && pc.connectionState === 'connected') {
+    showStatus('❌ Connection is still active. Wait for transfer to complete.', 'error');
+    return;
+  }
+  window.location.href = 'index.html';
+}
+
+function cancelReceive() {
+  try {
+    if (pc) pc.close();
+  } catch {}
+
+  document.getElementById('receiverCancelBtn').style.display = 'none';
+  document.getElementById('receiveProgressFill').style.width = '0%';
+  document.getElementById('receiveProgressFill').textContent = '0%';
+  document.getElementById('receiveStatus').textContent = 'Cancelled';
+  document.getElementById('receiverCancelBtn').style.display = 'none';
+  showStatus('❌ Receive cancelled', 'info');
 }

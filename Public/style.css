@@ -125,11 +125,15 @@ body {
 
 .step h3 {
   color: #333;
-  margin-bottom: 15px;
+  text-align: center;
   display: flex;
+  margin-bottom: 15px;
   align-items: center;
   gap: 10px;
   font-size: 18px;
+  width: fit-content; 
+  margin-left: auto; 
+  margin-right: auto;
 }
 
 .step-number {
@@ -402,9 +406,13 @@ input[type="file"] {
     font-size: 36px;
   }
 
-  .mode-selector {
-    flex-direction: column;
+ .mode-selector {
+   display: flex;
+   justify-content: center;
+   gap: 20px;
+   margin-top: 30px;
   }
+
 
   .header {
     flex-direction: column;
