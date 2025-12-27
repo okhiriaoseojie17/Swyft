@@ -198,6 +198,7 @@ async function applyAnswer(answer) {
 // ==========================
 // DATA CHANNEL (SENDER)
 // ==========================
+// sender.js - Update inside setupDataChannel()
 function setupDataChannel() {
   dataChannel = pc.createDataChannel('file');
   dataChannel.binaryType = 'arraybuffer';
@@ -209,6 +210,29 @@ function setupDataChannel() {
 
   dataChannel.onclose = () => showStatus('Connection closed', 'info');
   dataChannel.onerror = () => showStatus('Data channel error', 'error');
+
+  // ✅ ADDED: Listen for messages from Receiver (specifically "CANCEL")
+  dataChannel.onmessage = (e) => {
+    if (typeof e.data === 'string' && e.data === 'CANCEL') {
+      isCancelled = true;
+      isTransferring = false;
+      
+      // Abort file reading
+      if (reader && reader.readyState === FileReader.LOADING) {
+        reader.abort();
+      }
+
+      showStatus('❌ Receiver cancelled the transfer', 'error');
+      
+      // Reset UI
+      document.getElementById('sendProgressFill').style.width = '0%';
+      document.getElementById('sendProgressFill').textContent = '0%';
+      document.getElementById('sendStatus').textContent = 'Cancelled by peer';
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('pauseBtn').style.display = 'none';
+      document.getElementById('cancelBtn').style.display = 'none';
+    }
+  };
 }
 
 // ==========================
@@ -333,13 +357,25 @@ function sendFile() {
 
 
 // ==========================
-// ICE HELPER
+// ICE HELPER (Updated for Speed)
 // ==========================
 function waitForICE(pc) {
   return new Promise(resolve => {
-    if (pc.iceGatheringState === 'complete') resolve();
+    if (pc.iceGatheringState === 'complete') {
+      resolve();
+      return;
+    }
+
+    // specific check: wait for complete OR 2 seconds max
+    const timeout = setTimeout(() => {
+      resolve();
+    }, 2000); 
+
     pc.onicegatheringstatechange = () => {
-      if (pc.iceGatheringState === 'complete') resolve();
+      if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timeout);
+        resolve();
+      }
     };
   });
 }

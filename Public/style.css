@@ -650,3 +650,79 @@ textarea::-webkit-scrollbar-thumb:hover {
     letter-spacing: 6px;
   }
 }
+
+/* Container for the buttons */
+.download-link {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+/* Primary Download Button (ZIP or Single File) */
+.download-btn.primary {
+    display: block;
+    background-color: #4CAF50; /* Green */
+    color: white;
+    padding: 12px;
+    text-align: center;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.download-btn.primary:hover {
+    background-color: #45a049;
+}
+
+/* Secondary Action Button (Extract) */
+.action-btn {
+    display: block;
+    width: 100%;
+    background-color: #2196F3; /* Blue */
+    color: white;
+    padding: 12px;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.action-btn:hover {
+    background-color: #0b7dda;
+}
+
+/* List of extracted files */
+.extracted-files-list {
+    margin-top: 15px;
+    background: #f9f9f9;
+    padding: 10px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    text-align: left;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.extracted-files-list h4 {
+    margin: 0 0 10px 0;
+    color: #333;
+}
+
+.file-row {
+    padding: 8px;
+    border-bottom: 1px solid #eee;
+}
+
+.file-link {
+    text-decoration: none;
+    color: #333;
+    display: block;
+}
+
+.file-link:hover {
+    color: #2196F3;
+    font-weight: bold;
+}
