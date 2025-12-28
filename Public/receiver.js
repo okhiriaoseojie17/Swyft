@@ -2,7 +2,10 @@
 // WebRTC + Socket
 // ==========================
 let pc;
-let socket = io();
+let socket = io('https://swyft-q8lf.onrender.com', {
+  transports: ['websocket']
+});
+
 let isConnected = false;
 let isReceiving = false;
 let receiveChannel = null; 

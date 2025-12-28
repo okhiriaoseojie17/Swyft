@@ -4,7 +4,10 @@
 let pc;
 let dataChannel;
 let selectedFile = null;
-let socket = io();
+let socket = io('https://swyft-q8lf.onrender.com', {
+  transports: ['websocket']
+});
+
 let currentPIN = null;
 let isPaused = false;
 let isCancelled = false;
