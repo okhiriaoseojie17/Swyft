@@ -1,9 +1,9 @@
 {
   "name": "swyft",
   "version": "1.0.0",
-  "main": "server/server.js",
+  "main": "node server.js",
   "scripts": {
-    "start": "node server/server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",

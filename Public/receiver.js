@@ -32,8 +32,16 @@ async function connectWithPIN() {
     pc = new RTCPeerConnection({
   iceServers: [
     { urls: 'stun:openrelay.metered.ca:80' },
-    { urls: 'turn:openrelay.metered.ca:80', transport: 'udp' },
-    { urls: 'turn:openrelay.metered.ca:443', transport: 'tcp' }
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelay',
+      credential: 'openrelay'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelay',
+      credential: 'openrelay'
+    }
   ]
 });
 
