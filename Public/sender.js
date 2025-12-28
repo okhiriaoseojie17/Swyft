@@ -157,8 +157,12 @@ async function generatePIN() {
     showStatus('Generating PIN...', 'info');
 
     pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
+  iceServers: [
+    { urls: 'stun:openrelay.metered.ca:80' },
+    { urls: 'turn:openrelay.metered.ca:80', transport: 'udp' },
+    { urls: 'turn:openrelay.metered.ca:443', transport: 'tcp' }
+  ]
+});
 
     setupDataChannel();
 
