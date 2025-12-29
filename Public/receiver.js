@@ -2,8 +2,14 @@
 // WebRTC + Socket
 // ==========================
 let pc;
-let socket = io('https://swyft-q8lf.onrender.com', {
-  transports: ['websocket']
+let socket = io('https://swyft-q8lf.onrender.com');
+
+socket.on('connect', () => {
+  console.log('✅ Receiver connected:', socket.id);
+});
+
+socket.on('connect_error', err => {
+  console.error('❌ Receiver socket error:', err.message);
 });
 
 let isConnected = false;

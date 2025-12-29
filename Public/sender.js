@@ -4,8 +4,13 @@
 let pc;
 let dataChannel;
 let selectedFile = null;
-let socket = io('https://swyft-q8lf.onrender.com', {
-  transports: ['websocket']
+let socket = io('https://swyft-q8lf.onrender.com');
+socket.on('connect', () => {
+  console.log('✅ Connected to signaling server:', socket.id);
+});
+
+socket.on('connect_error', (err) => {
+  console.error('❌ Socket connection error:', err.message);
 });
 
 let currentPIN = null;
@@ -181,23 +186,31 @@ async function generatePIN() {
     await pc.setLocalDescription(offer);
     await waitForICE(pc);
 
-    socket.emit('create-room', pc.localDescription, (res) => {
-      if (!res.success) {
-        showStatus(res.message, 'error');
-        return;
-      }
+      // ⏳ Ensure socket is connected before emitting
+if (!socket.connected) {
+  showStatus('Connecting to server...', 'info');
+  await new Promise((resolve) => {
+    socket.once('connect', resolve);
+  });
+}
 
-      currentPIN = res.pin;
-      document.getElementById('pinCode').textContent = res.pin;
-      document.getElementById('pinDisplay').style.display = 'block';
-      showStatus(`PIN generated: ${res.pin}`, 'success');
+socket.emit('create-room', pc.localDescription, (res) => {
+  if (!res || !res.success) {
+    showStatus(res?.message || 'Server error', 'error');
+    return;
+  }
 
-      socket.on('answer-ready', (data) => {
-        if (data.pin === currentPIN) {
-          applyAnswerFromServer(data.answer);
-        }
-      });
-    });
+  currentPIN = res.pin;
+  document.getElementById('pinCode').textContent = res.pin;
+  document.getElementById('pinDisplay').style.display = 'block';
+  showStatus(`PIN generated: ${res.pin}`, 'success');
+
+  socket.on('answer-ready', (data) => {
+    if (data.pin === currentPIN) {
+      applyAnswerFromServer(data.answer);
+    }
+  });
+});
 
   } catch (err) {
     isTransferring = false;
