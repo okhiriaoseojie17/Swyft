@@ -102,15 +102,18 @@ io.on('connection', (socket) => {
 
   // Cleanup on disconnect
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-    
-    for (const [pin, room] of rooms.entries()) {
-      if (room.senderId === socket.id || room.receiverId === socket.id) {
-        rooms.delete(pin);
-        console.log(`Cleaned up room: ${pin}`);
-      }
+  console.log('Client disconnected:', socket.id);
+
+  for (const [pin, room] of rooms.entries()) {
+    if (room.senderId === socket.id) {
+      rooms.delete(pin);
+      console.log(`Cleaned up room (sender left): ${pin}`);
+    } else if (room.receiverId === socket.id) {
+      room.receiverId = null;
+      console.log(`Receiver left room: ${pin}`);
     }
-  });
+  }
+});
 });
 
 const PORT = process.env.PORT || 3000;
