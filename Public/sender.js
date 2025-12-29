@@ -73,9 +73,7 @@ function handleFileSelect(isFolder) {
   
   fileInfo.classList.add('show');
 
-  if (dataChannel && dataChannel.readyState === 'open') {
-    document.getElementById('sendBtn').disabled = false;
-  }
+  updateSendButtonState();
 
   document.getElementById('sendProgress').classList.add('show');
 
@@ -125,6 +123,11 @@ if (files.length > 1) {
   });
 }
 
+function updateSendButtonState() {
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = !(selectedFile && dataChannel && dataChannel.readyState === 'open');
+}
+
 // ==========================
 // ZIP FOLDER (GLOBAL)
 // ==========================
@@ -150,9 +153,7 @@ async function zipFolder(files) {
 
   updateFileInfo([zipFile]);
 
-  if (dataChannel && dataChannel.readyState === 'open') {
-    document.getElementById('sendBtn').disabled = false;
-  }
+ updateSendButtonState();
 
   showStatus('ZIP ready to send', 'success');
 }
@@ -218,10 +219,6 @@ socket.emit('create-room', pc.localDescription, (res) => {
   }
 }
 
-async function applyAnswer(answer) {
-  await pc.setRemoteDescription(answer);
-  showStatus('Connected! Ready to send file.', 'success');
-}
 
 // ==========================
 // DATA CHANNEL (SENDER)
@@ -231,10 +228,10 @@ function setupDataChannel() {
   dataChannel = pc.createDataChannel('file');
   dataChannel.binaryType = 'arraybuffer';
 
-  dataChannel.onopen = () => {
-    showStatus('Data channel open', 'success');
-    if (selectedFile) document.getElementById('sendBtn').disabled = false;
-  };
+ dataChannel.onopen = () => {
+  showStatus('Data channel open', 'success');
+  updateSendButtonState();
+};
 
   dataChannel.onclose = () => showStatus('Connection closed', 'info');
   dataChannel.onerror = () => showStatus('Data channel error', 'error');
@@ -421,9 +418,8 @@ async function applyAnswerFromServer(answer) {
     showStatus('✓ Connected via PIN!', 'success');
 
     // Enable send button if file already selected
-    if (selectedFile && dataChannel && dataChannel.readyState === 'open') {
-      document.getElementById('sendBtn').disabled = false;
-    }
+   updateSendButtonState();
+
   } catch (err) {
     isTransferring = false;
     console.error('Error applying answer:', err);
@@ -530,3 +526,5 @@ function updateFileInfo(files) {
 
   fileInfo.classList.add('show');
 }
+
+

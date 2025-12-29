@@ -76,7 +76,7 @@ async function connectWithPIN() {
       socket.emit('send-answer', { pin, answer: pc.localDescription }, (res) => {
         if (res.success) {
           document.getElementById('pinWaitingSection').style.display = 'block';
-          showStatus('✓ Connected!', 'success');
+          showStatus('✓ Paired. Waiting for sender…', 'info');
           document.getElementById('receiveFileSection').style.display = 'block';
         } else {
           showStatus('Error sending answer: ' + res.message, 'error');
@@ -133,14 +133,12 @@ function setupDataChannel() {
     const downloadContainer = document.getElementById('downloadArea');
     const cancelBtn = document.getElementById('receiverCancelBtn');
 
-    // Initial Reset
-    document.getElementById('receiveProgress').classList.add('show');
-    progressFill.style.width = '0%';
-    progressFill.textContent = '0%';
-    downloadContainer.classList.remove('show');
-    downloadContainer.innerHTML = ''; // Clear previous buttons
 
-    receiveChannel.onopen = () => showStatus('✓ Connected! Waiting for file...', 'success');
+    receiveChannel.onopen = () => {
+  isConnected = true;
+  showStatus('✓ Connected! Waiting for file...', 'success');
+};
+
     receiveChannel.onclose = () => showStatus('Connection closed', 'info');
 
     receiveChannel.onmessage = async e => {
@@ -149,6 +147,7 @@ function setupDataChannel() {
         
         // --- CANCELLED ---
         if (e.data === 'CANCEL') {
+          isReceiving = false;
           showStatus('❌ Sender cancelled transfer', 'error');
           currentBuffers = [];
           progressFill.style.width = '0%';
@@ -160,6 +159,8 @@ function setupDataChannel() {
 
         // --- TRANSFER COMPLETE (EOF) ---
         if (e.data === 'EOF') {
+          isReceiving = false;
+
 
           if (!currentBuffers.length || receivedSize === 0) {
     showStatus('Transfer cancelled before data arrived', 'info');
@@ -220,13 +221,12 @@ function setupDataChannel() {
             receivedSize = 0;
             startTime = Date.now();
             currentBuffers = [];
+            isReceiving = true;
+
 
             // UI Reset for new transfer
             cancelBtn.style.display = 'inline-block';
             progressFill.style.width = '0%';
-            document.getElementById('receiveProgress').classList.add('show');
-            downloadContainer.classList.remove('show');
-            downloadContainer.innerHTML = ''; // Ensure clean slate
             showStatus(`Receiving: ${data.name}`, 'info');
           }
         } catch {}
