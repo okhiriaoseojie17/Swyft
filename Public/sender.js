@@ -53,6 +53,7 @@ function handleFileSelect(isFolder) {
    // Single file
   selectedFile = files[0];
   updateFileInfo([selectedFile]);
+  setTimeout(() => updateSendButtonState(), 300);
 
   const fileInfo = document.getElementById('fileInfo');
   
@@ -230,7 +231,11 @@ function setupDataChannel() {
 
  dataChannel.onopen = () => {
   showStatus('Data channel open', 'success');
-  updateSendButtonState();
+
+  // 🔥 FORCE BUTTON CHECK AGAIN WHEN CHANNEL OPENS
+  setTimeout(() => {
+    updateSendButtonState();
+  }, 300);
 };
 
   dataChannel.onclose = () => showStatus('Connection closed', 'info');
