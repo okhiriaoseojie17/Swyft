@@ -16,6 +16,14 @@ let isConnected = false;
 let isReceiving = false;
 let receiveChannel = null; 
 
+
+document.addEventListener('DOMContentLoaded', () => {
+  const downloadArea = document.getElementById('downloadArea');
+  downloadArea.classList.remove('show');
+  downloadArea.innerHTML = '';
+});
+
+
 // ==========================
 // UI Helper
 // ==========================
@@ -78,6 +86,10 @@ async function connectWithPIN() {
           document.getElementById('pinWaitingSection').style.display = 'block';
           showStatus('✓ Paired. Waiting for sender…', 'info');
           document.getElementById('receiveFileSection').style.display = 'block';
+          const downloadArea = document.getElementById('downloadArea');
+        downloadArea.classList.remove('show');
+        downloadArea.innerHTML = '';
+
         } else {
           showStatus('Error sending answer: ' + res.message, 'error');
         }
