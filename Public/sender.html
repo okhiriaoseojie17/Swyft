@@ -5,26 +5,53 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Swyft - Send Files</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    /* Step navigation styles (#10) */
+    .step-page {
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .step-hidden {
+      display: none !important;
+    }
+    .step-active {
+      display: block;
+      animation: stepFadeIn 0.35s ease;
+    }
+    @keyframes stepFadeIn {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <button class="back-btn" onclick="goBack()">← Back</button>
       <div class="logo-small">
-        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft_full_logo_colured" width="200" height="100"></h2>
+        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft" width="200" height="100"></h2>
       </div>
     </div>
 
     <h1 class="h1">Sender</h1>
 
-    <!-- PIN Method -->
-    <div id="pin-method" class="method-section active">
+    <!-- ═══════════════════════════════════════
+         STEP 1 — Generate PIN
+    ════════════════════════════════════════ -->
+    <div id="step-pin" class="step-page step-active">
       <div class="step">
         <h3><span class="step-number">1</span> Generate PIN Code</h3>
-        <div class="instruction">Generate a 6-digit PIN for easy connection</div>
+        <div class="instruction">Generate a 6-digit PIN, then share it with the receiver</div>
         <button onclick="generatePIN()">Generate PIN</button>
-        
-        <div id="pinDisplay" class="pin-display" style="display: none;">
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════
+         STEP 2 — Show PIN + Wait for receiver
+    ════════════════════════════════════════ -->
+    <div id="step-waiting" class="step-page step-hidden">
+      <div class="step">
+        <h3><span class="step-number">1</span> Share This PIN</h3>
+        <div id="pinDisplay" class="pin-display">
           <div class="pin-code" id="pinCode">------</div>
           <p class="pin-instruction">Share this PIN with the receiver</p>
           <button class="copy-btn" onclick="copyPIN()">📋 Copy PIN</button>
@@ -32,37 +59,46 @@
       </div>
 
       <div class="step">
-        <h3>Wait for Connection</h3>
-        <div class="instruction">Waiting for receiver to enter PIN...</div>
+        <h3><span class="step-number">2</span> Waiting for Receiver…</h3>
+        <div class="instruction">Ask the receiver to enter the PIN on their device</div>
         <div id="connectionStatus" class="connection-status">
-          <div class="spinner" style="display: none;"></div>
-          <p id="statusText">No connection yet</p>
+          <div class="spinner"></div>
+          <p id="statusText">Waiting for receiver to connect…</p>
         </div>
       </div>
     </div>
-    
-    <!-- File Transfer Section (shown after connection) -->
-    <div class="step" id="fileTransferSection" style="display: none;">
-      <h3><span class="step-number">2</span> Select and Send File</h3>
-      <div class="file-input-wrapper">
-      <input type="file" id="fileInput" multiple onchange="handleFileSelect(false)"style="display:none;">
 
-      <input type="file" id="folderInput" webkitdirectory onchange="handleFileSelect(true)" style="display:none;">
+    <!-- ═══════════════════════════════════════
+         STEP 3 — Select file & send
+    ════════════════════════════════════════ -->
+    <div id="step-transfer" class="step-page step-hidden">
+      <div class="step">
+        <h3><span class="step-number">3</span> Select and Send File</h3>
 
-<div class="file-buttons">
-  <button onclick="document.getElementById('fileInput').click()">📄 Select File(s)</button>
-  <button onclick="document.getElementById('folderInput').click()">📁 Select Folder</button>
-</div>
+        <div class="connection-status" style="padding:15px; margin-bottom:16px;">
+          <div class="checkmark">✓</div>
+          <p>Receiver connected — ready to send</p>
+        </div>
 
-        <label for="fileInput" class="file-label">
+        <input type="file"  id="fileInput"   multiple           onchange="handleFileSelect(false)" style="display:none;">
+        <input type="file"  id="folderInput" webkitdirectory   onchange="handleFileSelect(true)"  style="display:none;">
+
+        <div class="file-buttons" style="display:flex; gap:10px; margin-bottom:12px;">
+          <button onclick="document.getElementById('fileInput').click()"  style="flex:1;">📄 Select File(s)</button>
+          <button onclick="document.getElementById('folderInput').click()" style="flex:1;">📁 Select Folder</button>
+        </div>
+
+        <label class="file-label">
           📁 Drag files or folders here, or click to select
         </label>
+
         <div id="fileInfo" class="file-info"></div>
       </div>
-      <button id="sendBtn" onclick="sendFile()" disabled>Send File</button>
-      <button id="pauseBtn" onclick="togglePause()" style="display: none; background: #ff9800; margin-top: 10px;">⏸️ Pause</button>
-      <button id="cancelBtn" onclick="cancelTransfer()" style="display: none; background: #f44336; margin-top: 10px;">❌ Cancel</button>
-      
+
+      <button id="sendBtn"   onclick="sendFile()"      disabled>Send File</button>
+      <button id="pauseBtn"  onclick="togglePause()"   style="display:none; background:#ff9800; margin-top:10px;">⏸️ Pause</button>
+      <button id="cancelBtn" onclick="cancelTransfer()" style="display:none; background:#f44336; margin-top:10px;">❌ Cancel</button>
+
       <div id="sendProgress" class="progress-container">
         <div class="progress-bar">
           <div id="sendProgressFill" class="progress-fill">0%</div>
@@ -74,10 +110,9 @@
     <div id="senderStatus" class="status"></div>
   </div>
 
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<script src="sender.js"></script>
-
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="sender.js"></script>
 </body>
 </html>

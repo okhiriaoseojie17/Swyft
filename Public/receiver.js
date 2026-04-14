@@ -14,21 +14,37 @@ socket.on('connect_error', err => {
 
 let isConnected = false;
 let isReceiving = false;
-let receiveChannel = null; 
-
+let receiveChannel = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   const downloadArea = document.getElementById('downloadArea');
-  downloadArea.classList.remove('show');
-  downloadArea.innerHTML = '';
+  if (downloadArea) {
+    downloadArea.classList.remove('show');
+    downloadArea.innerHTML = '';
+  }
 });
 
+// ==========================
+// STEP NAVIGATION (#10)
+// ==========================
+function showStep(stepId) {
+  document.querySelectorAll('.step-page').forEach(el => {
+    el.classList.remove('step-active');
+    el.classList.add('step-hidden');
+  });
+  const target = document.getElementById(stepId);
+  if (target) {
+    target.classList.remove('step-hidden');
+    target.classList.add('step-active');
+  }
+}
 
 // ==========================
 // UI Helper
 // ==========================
 function showStatus(message, type) {
   const el = document.getElementById('receiverStatus');
+  if (!el) return;
   el.textContent = message;
   el.className = `status show ${type}`;
 }
@@ -45,24 +61,23 @@ async function connectWithPIN() {
     }
     showStatus('Connecting...', 'info');
 
-    // Create PeerConnection first
     pc = new RTCPeerConnection({
-  iceServers: [
-    { urls: 'stun:openrelay.metered.ca:80' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelay',
-      credential: 'openrelay'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelay',
-      credential: 'openrelay'
-    }
-  ]
-});
+      iceServers: [
+        { urls: 'stun:openrelay.metered.ca:80' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelay',
+          credential: 'openrelay'
+        }
+      ]
+    });
 
-    setupDataChannel(); // <-- MUST be here before setRemoteDescription
+    setupDataChannel();
 
     socket.emit('join-room', pin, async (response) => {
       if (!response.success) {
@@ -74,22 +89,20 @@ async function connectWithPIN() {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      await new Promise((resolve) => {
-        if (pc.iceGatheringState === 'complete') resolve();
-        else pc.addEventListener('icegatheringstatechange', () => {
-          if (pc.iceGatheringState === 'complete') resolve();
-        });
-      });
+      await waitForICE(pc);
 
       socket.emit('send-answer', { pin, answer: pc.localDescription }, (res) => {
         if (res.success) {
-          document.getElementById('pinWaitingSection').style.display = 'block';
-          showStatus('✓ Paired. Waiting for sender…', 'info');
-          document.getElementById('receiveFileSection').style.display = 'block';
-          const downloadArea = document.getElementById('downloadArea');
-        downloadArea.classList.remove('show');
-        downloadArea.innerHTML = '';
+          // Move to receiving step (#10)
+          showStep('step-receive');
 
+          const downloadArea = document.getElementById('downloadArea');
+          if (downloadArea) {
+            downloadArea.classList.remove('show');
+            downloadArea.innerHTML = '';
+          }
+
+          showStatus('✓ Paired. Waiting for sender to send a file…', 'info');
         } else {
           showStatus('Error sending answer: ' + res.message, 'error');
         }
@@ -100,9 +113,8 @@ async function connectWithPIN() {
   }
 }
 
-
 // ==========================
-// ICE HELPER (Updated for Speed)
+// ICE HELPER
 // ==========================
 function waitForICE(pc) {
   return new Promise(resolve => {
@@ -111,10 +123,7 @@ function waitForICE(pc) {
       return;
     }
 
-    // specific check: wait for complete OR 2 seconds max
-    const timeout = setTimeout(() => {
-      resolve();
-    }, 2000); 
+    const timeout = setTimeout(() => resolve(), 2000);
 
     pc.onicegatheringstatechange = () => {
       if (pc.iceGatheringState === 'complete') {
@@ -126,7 +135,7 @@ function waitForICE(pc) {
 }
 
 // ==========================
-// DATA CHANNEL (RECEIVER) - FIXED & NEW FEATURES
+// DATA CHANNEL (RECEIVER)
 // ==========================
 function setupDataChannel() {
   pc.ondatachannel = event => {
@@ -139,92 +148,80 @@ function setupDataChannel() {
     let startTime = null;
     let currentBuffers = [];
 
-    // UI Elements
-    const progressFill = document.getElementById('receiveProgressFill');
-    const statusText = document.getElementById('receiveStatus');
+    const progressFill    = document.getElementById('receiveProgressFill');
+    const statusText      = document.getElementById('receiveStatus');
     const downloadContainer = document.getElementById('downloadArea');
-    const cancelBtn = document.getElementById('receiverCancelBtn');
-
+    const cancelBtn       = document.getElementById('receiverCancelBtn');
+    const progressWrap    = document.getElementById('receiveProgress');
 
     receiveChannel.onopen = () => {
-  isConnected = true;
-  showStatus('✓ Connected! Waiting for file...', 'success');
-};
+      isConnected = true;
+      showStatus('✓ Connected! Waiting for file...', 'success');
+    };
 
     receiveChannel.onclose = () => showStatus('Connection closed', 'info');
 
     receiveChannel.onmessage = async e => {
-      // 1. Text Messages (Metadata, EOF, Cancel)
+
+      // ── Text messages ──────────────────────────────
       if (typeof e.data === 'string') {
-        
-        // --- CANCELLED ---
+
+        // CANCELLED by sender
         if (e.data === 'CANCEL') {
           isReceiving = false;
           showStatus('❌ Sender cancelled transfer', 'error');
           currentBuffers = [];
-          progressFill.style.width = '0%';
-          progressFill.textContent = '0%';
-          statusText.textContent = 'Cancelled';
-          cancelBtn.style.display = 'none';
+          if (progressFill) { progressFill.style.width = '0%'; progressFill.textContent = '0%'; }
+          if (statusText) statusText.textContent = 'Cancelled';
+          if (cancelBtn) cancelBtn.style.display = 'none';
           return;
         }
 
-        // --- TRANSFER COMPLETE (EOF) ---
+        // EOF — transfer complete
         if (e.data === 'EOF') {
           isReceiving = false;
 
-
           if (!currentBuffers.length || receivedSize === 0) {
-    showStatus('Transfer cancelled before data arrived', 'info');
-    cancelBtn.style.display = 'none';
-    return;
-  }
+            showStatus('Transfer cancelled before data arrived', 'info');
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            return;
+          }
 
-          const blob = new Blob(currentBuffers, { 
-            type: fileMetadata?.mimeType || 'application/octet-stream' 
+          const blob = new Blob(currentBuffers, {
+            type: fileMetadata?.mimeType || 'application/octet-stream'
           });
 
-          // 1. Force Reset Progress Bar immediately
-          progressFill.style.width = '0%';
-          progressFill.textContent = '0%';
-          statusText.textContent = 'Transfer Complete';
-          cancelBtn.style.display = 'none';
+          if (progressFill) { progressFill.style.width = '0%'; progressFill.textContent = '0%'; }
+          if (statusText) statusText.textContent = 'Transfer Complete';
+          if (cancelBtn) cancelBtn.style.display = 'none';
 
-          // 2. Clear previous buttons to prevent duplicates
-          downloadContainer.innerHTML = ''; 
+          if (downloadContainer) downloadContainer.innerHTML = '';
 
-          // 3. Handle Download Options
           if (fileMetadata?.name.endsWith('.zip')) {
-            // === ZIP / FOLDER MODE ===
             showStatus('✓ Bundle received', 'success');
-
-            // Option A: Download as ZIP (Button 1)
             createMainButton(downloadContainer, blob, fileMetadata.name, '📦 Download as ZIP');
 
-            // Option B: Extract / View Folder (Button 2)
             const extractBtn = document.createElement('button');
             extractBtn.textContent = '📂 View / Extract Files';
-            extractBtn.className = 'action-btn'; // We'll add CSS for this
+            extractBtn.className = 'action-btn';
             extractBtn.onclick = async () => {
-                extractBtn.disabled = true;
-                extractBtn.textContent = 'Extracting...';
-                await extractZipAndShowFiles(blob, downloadContainer);
-                extractBtn.style.display = 'none'; // Hide button after extracting
+              extractBtn.disabled = true;
+              extractBtn.textContent = 'Extracting...';
+              await extractZipAndShowFiles(blob, downloadContainer);
+              extractBtn.style.display = 'none';
             };
             downloadContainer.appendChild(extractBtn);
-
           } else {
-            // === SINGLE FILE MODE ===
             showStatus('✓ File received!', 'success');
             createMainButton(downloadContainer, blob, fileMetadata.name, `⬇️ Download ${fileMetadata.name}`);
           }
 
-          downloadContainer.classList.add('show');
+          if (downloadContainer) downloadContainer.classList.add('show');
           currentBuffers = [];
           return;
         }
 
-        // --- METADATA (START) ---
+        // Metadata (start of transfer)
         try {
           const data = JSON.parse(e.data);
           if (data.type === 'metadata') {
@@ -235,41 +232,42 @@ function setupDataChannel() {
             currentBuffers = [];
             isReceiving = true;
 
-
-            // UI Reset for new transfer
-            cancelBtn.style.display = 'inline-block';
-            progressFill.style.width = '0%';
+            if (cancelBtn) cancelBtn.style.display = 'inline-block';
+            if (progressFill) { progressFill.style.width = '0%'; }
+            if (progressWrap) progressWrap.classList.add('show');
             showStatus(`Receiving: ${data.name}`, 'info');
           }
-        } catch {}
-      } 
-      
-      // 2. Binary Data (Chunks)
-      else {
+        } catch (_) {}
+
+      // ── Binary data (chunks) ───────────────────────
+      } else {
         currentBuffers.push(e.data);
         receivedSize += e.data.byteLength;
 
         if (expectedSize > 0) {
           const percent = Math.round((receivedSize / expectedSize) * 100);
-          progressFill.style.width = percent + '%';
-          progressFill.textContent = percent + '%';
+          if (progressFill) {
+            progressFill.style.width = percent + '%';
+            progressFill.textContent = percent + '%';
+          }
 
-          // Calculate Speed
           const elapsedTime = (Date.now() - startTime) / 1000;
           const speed = elapsedTime > 0 ? ((receivedSize / (1024 * 1024)) / elapsedTime) : 0;
-          const sentMB = (receivedSize / (1024 * 1024)).toFixed(2);
+          const sentMB  = (receivedSize / (1024 * 1024)).toFixed(2);
           const totalMB = (expectedSize / (1024 * 1024)).toFixed(2);
 
-          statusText.textContent = `${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
+          if (statusText) {
+            statusText.textContent = `${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
+          }
         }
       }
     };
   };
 }
 
-// --- HELPER FUNCTIONS ---
-
-// Creates the main "Download ZIP" or "Download File" button
+// ==========================
+// HELPER FUNCTIONS
+// ==========================
 function createMainButton(container, blob, filename, label) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -280,20 +278,19 @@ function createMainButton(container, blob, filename, label) {
   container.appendChild(a);
 }
 
-// Extracts the ZIP and lists files individually (Simulating "Download Folder")
 async function extractZipAndShowFiles(blob, container) {
   try {
     const zip = await JSZip.loadAsync(blob);
-    
+
     const fileList = document.createElement('div');
     fileList.className = 'extracted-files-list';
-    
+
     const header = document.createElement('h4');
     header.textContent = 'Files (download individually):';
     fileList.appendChild(header);
 
     for (const [relativePath, file] of Object.entries(zip.files)) {
-      if (file.dir) continue; // Skip empty directory entries
+      if (file.dir) continue;
 
       const content = await file.async('blob');
       const url = URL.createObjectURL(content);
@@ -303,7 +300,6 @@ async function extractZipAndShowFiles(blob, container) {
 
       const link = document.createElement('a');
       link.href = url;
-      // Use the full path so files in subfolders don't clash
       link.download = relativePath.replace(/\//g, '_');
       link.textContent = `📄 ${relativePath}`;
       link.className = 'file-link';
@@ -316,27 +312,6 @@ async function extractZipAndShowFiles(blob, container) {
   } catch (err) {
     alert('Error extracting zip: ' + err.message);
   }
-}
-
-// Helper to create links dynamically
-function createDownloadLink(container, blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.textContent = `⬇️ Download ${filename}`;
-  
-  // Style the link to look like a button or clean text
-  a.style.display = 'block';
-  a.style.padding = '10px';
-  a.style.margin = '5px 0';
-  a.style.background = '#f0f0f0';
-  a.style.borderRadius = '5px';
-  a.style.textDecoration = 'none';
-  a.style.color = '#333';
-  a.style.fontWeight = 'bold';
-
-  container.appendChild(a);
 }
 
 function goBack() {
@@ -352,34 +327,23 @@ function goBack() {
 }
 
 function cancelReceive() {
-  if (receiveChannel) receiveChannel.onmessage = receiveChannel.onmessage;
-
-  // 1. Notify sender
   if (receiveChannel && receiveChannel.readyState === 'open') {
-    try {
-      receiveChannel.send('CANCEL');
-    } catch (e) {}
+    try { receiveChannel.send('CANCEL'); } catch (_) {}
   }
 
-  // 2. HARD RESET receiver state
   isReceiving = false;
 
-  // 3. Reset UI (MATCH sender behavior)
-  const progress = document.getElementById('receiveProgress');
-  const fill = document.getElementById('receiveProgressFill');
-  const status = document.getElementById('receiveStatus');
-  const download = document.getElementById('downloadArea');
+  const progressFill    = document.getElementById('receiveProgressFill');
+  const statusText      = document.getElementById('receiveStatus');
+  const progressWrap    = document.getElementById('receiveProgress');
+  const download        = document.getElementById('downloadArea');
+  const cancelBtn       = document.getElementById('receiverCancelBtn');
 
-  fill.style.width = '0%';
-  fill.textContent = '0%';
-  status.textContent = 'Waiting for file...';
-  progress.classList.remove('show');
-
-  download.classList.remove('show');
-  download.innerHTML = '';
-
-  document.getElementById('receiverCancelBtn').style.display = 'none';
+  if (progressFill) { progressFill.style.width = '0%'; progressFill.textContent = '0%'; }
+  if (statusText) statusText.textContent = 'Waiting for file...';
+  if (progressWrap) progressWrap.classList.remove('show');
+  if (download) { download.classList.remove('show'); download.innerHTML = ''; }
+  if (cancelBtn) cancelBtn.style.display = 'none';
 
   showStatus('❌ Transfer cancelled', 'info');
 }
-

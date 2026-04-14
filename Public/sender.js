@@ -22,10 +22,26 @@ let isTransferring = false;
 let sendChunkFn = null;
 
 // ==========================
+// STEP NAVIGATION (#10)
+// ==========================
+function showStep(stepId) {
+  document.querySelectorAll('.step-page').forEach(el => {
+    el.classList.remove('step-active');
+    el.classList.add('step-hidden');
+  });
+  const target = document.getElementById(stepId);
+  if (target) {
+    target.classList.remove('step-hidden');
+    target.classList.add('step-active');
+  }
+}
+
+// ==========================
 // UI Helpers
 // ==========================
 function showStatus(message, type) {
   const el = document.getElementById('senderStatus');
+  if (!el) return;
   el.textContent = message;
   el.className = `status show ${type}`;
 }
@@ -38,46 +54,21 @@ function handleFileSelect(isFolder) {
   const files = Array.from(input.files);
   if (!files.length) return;
 
-  // Folder → zip
   if (isFolder) {
     zipFolder(files);
     return;
-  } 
+  }
 
-  // Multiple files → zip
   if (files.length > 1) {
-     zipFolder(files);
-     return;
-   }
+    zipFolder(files);
+    return;
+  }
 
-   // Single file
   selectedFile = files[0];
   updateFileInfo([selectedFile]);
-  setTimeout(() => updateSendButtonState(), 300);
-
-  const fileInfo = document.getElementById('fileInfo');
-  
-  if (files.length === 1) {
-    // Single file
-    const sizeMB = (files[0].size / (1024 * 1024)).toFixed(2);
-    const sizeGB = (files[0].size / (1024 * 1024 * 1024)).toFixed(2);
-    const displaySize = files[0].size > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
-    fileInfo.innerHTML = `<strong>${files[0].name}</strong><br>Size: ${displaySize}`;
-  } else {
-    // Multiple files
-    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-    const sizeMB = (totalSize / (1024 * 1024)).toFixed(2);
-    const sizeGB = (totalSize / (1024 * 1024 * 1024)).toFixed(2);
-    const displaySize = totalSize > 1024 * 1024 * 1024 ? `${sizeGB} GB` : `${sizeMB} MB`;
-    fileInfo.innerHTML = `<strong>${files.length} files selected</strong><br>Total size: ${displaySize}`;
-  }
-  
-  fileInfo.classList.add('show');
-
   updateSendButtonState();
 
   document.getElementById('sendProgress').classList.add('show');
-
 }
 
 const dropZone = document.querySelector('.file-label');
@@ -99,38 +90,33 @@ if (dropZone) {
     const files = Array.from(e.dataTransfer.files);
     if (!files.length) return;
 
-    // Folder OR multiple files → ZIP
-   if (files.length === 1 && files[0].size === 0) {
-  showStatus(
-    '⚠️ Folder drag not supported. Use "Select Folder" button.',
-    'error'
-  );
-  return;
-}
+    if (files.length === 1 && files[0].size === 0) {
+      showStatus('⚠️ Folder drag not supported. Use "Select Folder" button.', 'error');
+      return;
+    }
 
-// Multiple files → ZIP
-if (files.length > 1) {
-  await zipFolder(files);
-  return;
-}
+    if (files.length > 1) {
+      await zipFolder(files);
+      return;
+    }
 
-    // Single file
     selectedFile = files[0];
     updateFileInfo([selectedFile]);
-
-    if (dataChannel && dataChannel.readyState === 'open') {
-      document.getElementById('sendBtn').disabled = false;
-    }
+    updateSendButtonState();
   });
 }
 
+// FIX #3: Only check readyState — no setTimeout guessing
 function updateSendButtonState() {
   const btn = document.getElementById('sendBtn');
-  btn.disabled = !(selectedFile && dataChannel && dataChannel.readyState === 'open');
+  if (!btn) return;
+  const channelReady = dataChannel && dataChannel.readyState === 'open';
+  const fileReady = !!selectedFile;
+  btn.disabled = !(channelReady && fileReady);
 }
 
 // ==========================
-// ZIP FOLDER (GLOBAL)
+// ZIP FOLDER
 // ==========================
 async function zipFolder(files) {
   showStatus('Zipping files...', 'info');
@@ -151,11 +137,8 @@ async function zipFolder(files) {
   );
 
   selectedFile = zipFile;
-
   updateFileInfo([zipFile]);
-
- updateSendButtonState();
-
+  updateSendButtonState();
   showStatus('ZIP ready to send', 'success');
 }
 
@@ -166,21 +149,21 @@ async function generatePIN() {
   try {
     showStatus('Generating PIN...', 'info');
 
-   pc = new RTCPeerConnection({
-  iceServers: [
-    { urls: 'stun:openrelay.metered.ca:80' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelay',
-      credential: 'openrelay'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelay',
-      credential: 'openrelay'
-    }
-  ]
-});
+    pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:openrelay.metered.ca:80' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelay',
+          credential: 'openrelay'
+        }
+      ]
+    });
 
     setupDataChannel();
 
@@ -188,31 +171,33 @@ async function generatePIN() {
     await pc.setLocalDescription(offer);
     await waitForICE(pc);
 
-      // ⏳ Ensure socket is connected before emitting
-if (!socket.connected) {
-  showStatus('Connecting to server...', 'info');
-  await new Promise((resolve) => {
-    socket.once('connect', resolve);
-  });
-}
-
-socket.emit('create-room', pc.localDescription, (res) => {
-  if (!res || !res.success) {
-    showStatus(res?.message || 'Server error', 'error');
-    return;
-  }
-
-  currentPIN = res.pin;
-  document.getElementById('pinCode').textContent = res.pin;
-  document.getElementById('pinDisplay').style.display = 'block';
-  showStatus(`PIN generated: ${res.pin}`, 'success');
-
-  socket.on('answer-ready', (data) => {
-    if (data.pin === currentPIN) {
-      applyAnswerFromServer(data.answer);
+    if (!socket.connected) {
+      showStatus('Connecting to server...', 'info');
+      await new Promise((resolve) => {
+        socket.once('connect', resolve);
+      });
     }
-  });
-});
+
+    socket.emit('create-room', pc.localDescription, (res) => {
+      if (!res || !res.success) {
+        showStatus(res?.message || 'Server error', 'error');
+        return;
+      }
+
+      currentPIN = res.pin;
+      document.getElementById('pinCode').textContent = res.pin;
+      document.getElementById('pinDisplay').style.display = 'block';
+      showStatus(`PIN generated: ${res.pin}`, 'success');
+
+      // Move to waiting step
+      showStep('step-waiting');
+
+      socket.on('answer-ready', (data) => {
+        if (data.pin === currentPIN) {
+          applyAnswerFromServer(data.answer);
+        }
+      });
+    });
 
   } catch (err) {
     isTransferring = false;
@@ -220,41 +205,34 @@ socket.emit('create-room', pc.localDescription, (res) => {
   }
 }
 
-
 // ==========================
 // DATA CHANNEL (SENDER)
 // ==========================
-// sender.js - Update inside setupDataChannel()
 function setupDataChannel() {
   dataChannel = pc.createDataChannel('file');
   dataChannel.binaryType = 'arraybuffer';
 
- dataChannel.onopen = () => {
-  showStatus('Data channel open', 'success');
-
-  // 🔥 FORCE BUTTON CHECK AGAIN WHEN CHANNEL OPENS
-  setTimeout(() => {
+  // FIX #3: This is the ONLY place we enable the send button.
+  // No setTimeout, no guessing — we wait for the real open event.
+  dataChannel.onopen = () => {
+    showStatus('✓ Connected! Select a file to send.', 'success');
     updateSendButtonState();
-  }, 300);
-};
+  };
 
   dataChannel.onclose = () => showStatus('Connection closed', 'info');
   dataChannel.onerror = () => showStatus('Data channel error', 'error');
 
-  // ✅ ADDED: Listen for messages from Receiver (specifically "CANCEL")
   dataChannel.onmessage = (e) => {
     if (typeof e.data === 'string' && e.data === 'CANCEL') {
       isCancelled = true;
       isTransferring = false;
-      
-      // Abort file reading
+
       if (reader && reader.readyState === FileReader.LOADING) {
         reader.abort();
       }
 
       showStatus('❌ Receiver cancelled the transfer', 'error');
-      
-      // Reset UI
+
       document.getElementById('sendProgressFill').style.width = '0%';
       document.getElementById('sendProgressFill').textContent = '0%';
       document.getElementById('sendStatus').textContent = 'Cancelled by peer';
@@ -266,12 +244,12 @@ function setupDataChannel() {
 }
 
 // ==========================
-// FILE TRANSFER (ROBUST)
+// FILE TRANSFER — FIX #12 (Backpressure)
 // ==========================
-// File Transfer with Proper Flow Control for Large Files
 function sendFile() {
   isCancelled = false;
   isTransferring = true;
+
   if (!dataChannel || dataChannel.readyState !== 'open') {
     showStatus('❌ Connection not ready!', 'error');
     return;
@@ -282,19 +260,21 @@ function sendFile() {
     return;
   }
 
-  const chunkSize = 64 * 1024; // 64KB
-  const maxBuffer = 16 * 1024 * 1024; // 16MB backpressure threshold
+  const chunkSize = 64 * 1024;         // 64 KB per chunk
+  const maxBuffer = 8 * 1024 * 1024;   // 8 MB high-water mark
+  const lowWater  = 2 * 1024 * 1024;   // 2 MB low-water mark (when to resume)
   const file = selectedFile;
   let offset = 0;
   const startTime = Date.now();
+  let stallGuardTimer = null;           // FIX #12: safety restart timer
 
-  // Prepare UI
+  // UI setup
   document.getElementById('sendProgress').classList.add('show');
   document.getElementById('sendBtn').disabled = true;
   document.getElementById('pauseBtn').style.display = 'inline-block';
   document.getElementById('cancelBtn').style.display = 'inline-block';
 
-  // Send file metadata first
+  // Send metadata
   const metadata = {
     type: 'metadata',
     name: file.name,
@@ -312,29 +292,55 @@ function sendFile() {
   }
 
   reader = new FileReader();
-    
-    sendChunkFn = function sendChunk() {
+
+  // FIX #12: Set bufferedAmountLowThreshold BEFORE sending starts
+  dataChannel.bufferedAmountLowThreshold = lowWater;
+
+  // FIX #12: onbufferedamountlow set once here — restarts the loop reliably
+  dataChannel.onbufferedamountlow = () => {
+    if (stallGuardTimer) {
+      clearTimeout(stallGuardTimer);
+      stallGuardTimer = null;
+    }
+    if (!isPaused && !isCancelled) {
+      sendChunkFn();
+    }
+  };
+
+  sendChunkFn = function sendChunk() {
     if (isCancelled) return;
     if (isPaused) return;
+
     if (offset >= file.size) {
-      dataChannel.send('EOF');
+      // Done
+      try { dataChannel.send('EOF'); } catch (_) {}
       isTransferring = false;
       showStatus('✓ File sent successfully!', 'success');
       document.getElementById('sendBtn').disabled = false;
       document.getElementById('pauseBtn').style.display = 'none';
       document.getElementById('cancelBtn').style.display = 'none';
+      if (stallGuardTimer) clearTimeout(stallGuardTimer);
       return;
     }
 
-    // Check for backpressure
+    // Backpressure check
     if (dataChannel.bufferedAmount > maxBuffer) {
-      // Wait for bufferedamountlow event
-      return;
+      // FIX #12: Safety net — if onbufferedamountlow is somehow missed,
+      // this timer will restart the loop after 500ms
+      if (!stallGuardTimer) {
+        stallGuardTimer = setTimeout(() => {
+          stallGuardTimer = null;
+          if (!isPaused && !isCancelled && dataChannel.readyState === 'open') {
+            sendChunkFn();
+          }
+        }, 500);
+      }
+      return; // wait for onbufferedamountlow or the safety timer
     }
 
     const slice = file.slice(offset, offset + chunkSize);
     reader.readAsArrayBuffer(slice);
-  }
+  };
 
   reader.onload = e => {
     if (isCancelled) return;
@@ -351,20 +357,19 @@ function sendFile() {
       const sentMB = (offset / (1024 * 1024)).toFixed(2);
       const totalMB = (file.size / (1024 * 1024)).toFixed(2);
       const elapsedTime = (Date.now() - startTime) / 1000;
-      const speed = (offset / (1024 * 1024)) / elapsedTime;
+      const speed = elapsedTime > 0 ? (offset / (1024 * 1024)) / elapsedTime : 0;
 
       document.getElementById('sendStatus').textContent =
         `Sent: ${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
 
-      // Send next chunk
+      // Continue — sendChunk handles its own backpressure gate
       sendChunkFn();
     } catch (err) {
       isTransferring = false;
-      if (dataChannel.readyState !== 'open') {
+      if (dataChannel.readyState !== 'open') return;
       console.error('Send error:', err);
       showStatus('Error sending file: ' + err.message, 'error');
       document.getElementById('sendBtn').disabled = false;
-      }
     }
   };
 
@@ -373,21 +378,12 @@ function sendFile() {
     document.getElementById('sendBtn').disabled = false;
   };
 
-  // Backpressure handler
-  dataChannel.onbufferedamountlow = () => {
-    if (!isPaused && !isCancelled && sendChunkFn) {
-    sendChunkFn();
-  }
-  };
-  dataChannel.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB threshold
-
-  // Start sending
+  // Kick off
   sendChunkFn();
 }
 
-
 // ==========================
-// ICE HELPER (Updated for Speed)
+// ICE HELPER
 // ==========================
 function waitForICE(pc) {
   return new Promise(resolve => {
@@ -396,10 +392,7 @@ function waitForICE(pc) {
       return;
     }
 
-    // specific check: wait for complete OR 2 seconds max
-    const timeout = setTimeout(() => {
-      resolve();
-    }, 2000); 
+    const timeout = setTimeout(() => resolve(), 2000);
 
     pc.onicegatheringstatechange = () => {
       if (pc.iceGatheringState === 'complete') {
@@ -414,16 +407,14 @@ async function applyAnswerFromServer(answer) {
   try {
     await pc.setRemoteDescription(answer);
     isConnected = true;
-    // ✅ Show file transfer UI
-    document.getElementById('fileTransferSection').style.display = 'block';
 
-    // Update connection UI
-    document.querySelector('#connectionStatus .spinner').style.display = 'none';
-    document.getElementById('statusText').textContent = '✓ Connected!';
-    showStatus('✓ Connected via PIN!', 'success');
+    // Move to file selection step (#10)
+    showStep('step-transfer');
 
-    // Enable send button if file already selected
-   updateSendButtonState();
+    showStatus('✓ Connected! Select a file to send.', 'success');
+
+    // FIX #3: Don't call updateSendButtonState here — dataChannel.onopen
+    // will do it when the channel is actually ready.
 
   } catch (err) {
     isTransferring = false;
@@ -455,12 +446,9 @@ function togglePause() {
     btn.textContent = '⏸️ Pause';
     btn.style.background = '#ff9800';
     showStatus('Resuming transfer...', 'info');
-
-    if (sendChunkFn) {
-      setTimeout(() => sendChunkFn(), 0); // ✅ restart loop
-    }
+    if (sendChunkFn) sendChunkFn();
   }
-} 
+}
 
 function cancelTransfer() {
   if (confirm('Are you sure you want to cancel this transfer?')) {
@@ -469,10 +457,9 @@ function cancelTransfer() {
     isTransferring = false;
 
     if (reader && reader.readyState === FileReader.LOADING) {
-    reader.abort();
-  }
+      reader.abort();
+    }
 
-    // Send cancel signal
     try {
       if (dataChannel && dataChannel.readyState === 'open') {
         dataChannel.send('CANCEL');
@@ -480,16 +467,15 @@ function cancelTransfer() {
     } catch (e) {
       console.log('Could not send cancel signal');
     }
-    // Reset UI
+
     document.getElementById('sendProgressFill').style.width = '0%';
     document.getElementById('sendProgressFill').textContent = '0%';
     document.getElementById('sendStatus').textContent = '';
     document.getElementById('sendBtn').disabled = false;
     document.getElementById('pauseBtn').style.display = 'none';
     document.getElementById('cancelBtn').style.display = 'none';
-    
+
     showStatus('Transfer cancelled', 'info');
-  
   }
 }
 
@@ -499,29 +485,15 @@ function copyPIN() {
   showStatus('PIN copied to clipboard', 'success');
 }
 
-function sendSingleFile(file, index, total) {
-  const metadata = {
-    type: 'metadata',
-    name: file.name,
-    size: file.size,
-    path: file.webkitRelativePath || file.name,
-    index,
-    total
-  };
-
-  dataChannel.send(JSON.stringify(metadata));
-  // ⬇️ keep your existing chunk logic here unchanged
-}
-
 function updateFileInfo(files) {
   const fileInfo = document.getElementById('fileInfo');
+  if (!fileInfo) return;
 
   if (files.length === 1) {
     const f = files[0];
     const sizeMB = (f.size / (1024 * 1024)).toFixed(2);
     const sizeGB = (f.size / (1024 * 1024 * 1024)).toFixed(2);
     const displaySize = f.size > 1024 ** 3 ? `${sizeGB} GB` : `${sizeMB} MB`;
-
     fileInfo.innerHTML = `<strong>${f.name}</strong><br>Size: ${displaySize}`;
   } else {
     const totalSize = files.reduce((s, f) => s + f.size, 0);
@@ -531,5 +503,3 @@ function updateFileInfo(files) {
 
   fileInfo.classList.add('show');
 }
-
-

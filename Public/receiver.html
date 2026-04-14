@@ -5,68 +5,88 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Swyft - Receive Files</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    /* Step navigation styles (#10) */
+    .step-page {
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .step-hidden {
+      display: none !important;
+    }
+    .step-active {
+      display: block;
+      animation: stepFadeIn 0.35s ease;
+    }
+    @keyframes stepFadeIn {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <button class="back-btn" onclick="goBack()">← Back</button>
       <div class="logo-small">
-        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft_full_logo_colured" width="200" height="100"></h2>
+        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft" width="200" height="100"></h2>
       </div>
     </div>
 
     <h1 class="h1">Receiver</h1>
 
-    <!-- PIN Method -->
-    <div id="pin-method" class="method-section active">
+    <!-- ═══════════════════════════════════════
+         STEP 1 — Enter PIN
+    ════════════════════════════════════════ -->
+    <div id="step-pin" class="step-page step-active">
       <div class="step">
         <h3><span class="step-number">1</span> Enter 6-Digit PIN</h3>
-        <div class="instruction">Enter the PIN code from the sender</div>
-        
+        <div class="instruction">Enter the PIN code shown on the sender's device</div>
+
         <div class="pin-input-container">
-          <input type="text" 
-                 id="pinInput" 
-                 class="pin-input" 
-                 maxlength="6" 
+          <input type="text"
+                 id="pinInput"
+                 class="pin-input"
+                 maxlength="6"
                  placeholder="000000"
                  pattern="[0-9]*"
                  inputmode="numeric">
         </div>
-        
+
         <button onclick="connectWithPIN()">Connect</button>
       </div>
+    </div>
 
-      <div class="step" id="pinWaitingSection" style="display: none;">
-        <h3>Connection Established</h3>
-        <div class="instruction">Waiting for file transfer...</div>
-        <div class="connection-status">
+    <!-- ═══════════════════════════════════════
+         STEP 2 — Receive file
+    ════════════════════════════════════════ -->
+    <div id="step-receive" class="step-page step-hidden">
+      <div class="step">
+        <h3><span class="step-number">2</span> Receive File</h3>
+
+        <div class="connection-status" style="padding:15px; margin-bottom:16px;">
           <div class="checkmark">✓</div>
-          <p>Ready to receive files</p>
+          <p>Connected — waiting for sender to send a file</p>
         </div>
+
+        <div id="receiveProgress" class="progress-container">
+          <div class="progress-bar">
+            <div id="receiveProgressFill" class="progress-fill">0%</div>
+          </div>
+          <div id="receiveStatus" class="transfer-status">Waiting for file…</div>
+        </div>
+
+        <div id="downloadArea" class="download-link"></div>
       </div>
+
+      <button id="receiverCancelBtn" onclick="cancelReceive()" style="background:#f44336; display:none;">❌ Cancel</button>
     </div>
 
-    <!-- File Reception Section -->
-    <div class="step" id="receiveFileSection" style="display:none;">
-      <h3><span class="step-number">2</span> Receive File</h3>
-      <div id="receiveProgress" class="progress-container">
-        <div class="progress-bar">
-          <div id="receiveProgressFill" class="progress-fill">0%</div>
-        </div>
-        <div id="receiveStatus" class="transfer-status">Waiting for file...</div>
-      </div>
-      
-      <div id="downloadArea" class="download-link"></div>
- 
-    </div>
-    <button id="receiverCancelBtn" onclick="cancelReceive()" style="background:#f44336; display:none;">❌ Cancel</button>
     <div id="receiverStatus" class="status"></div>
   </div>
 
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<script src="receiver.js"></script>
-
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="receiver.js"></script>
 </body>
 </html>
