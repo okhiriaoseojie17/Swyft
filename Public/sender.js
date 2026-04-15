@@ -66,7 +66,7 @@ function handleFileSelect(isFolder) {
 
   selectedFile = files[0];
   updateFileInfo([selectedFile]);
-  updateSendButtonState();
+  setTimeout(updateSendButtonState, 0);
 
   document.getElementById('sendProgress').classList.add('show');
 }
@@ -110,9 +110,13 @@ document.addEventListener('drop', async e => {
 function updateSendButtonState() {
   const btn = document.getElementById('sendBtn');
   if (!btn) return;
-  const channelReady = dataChannel && dataChannel.readyState === 'open';
-  const fileReady = !!selectedFile;
-  btn.disabled = !(channelReady && fileReady);
+
+  const ready =
+    dataChannel &&
+    dataChannel.readyState === 'open' &&
+    selectedFile;
+
+  btn.disabled = !ready;
 }
 
 // ==========================
@@ -411,6 +415,7 @@ async function applyAnswerFromServer(answer) {
 
     showStep('step-transfer');
     showStatus('✓ Connected! Select a file to send.', 'success');
+    updateSendButtonState();
 
   } catch (err) {
     isTransferring = false;
