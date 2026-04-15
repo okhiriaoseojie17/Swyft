@@ -291,12 +291,10 @@ function sendFile() {
     return;
   }
 
-  reader = new FileReader();
-
-  // FIX #12: Set bufferedAmountLowThreshold BEFORE sending starts
+  // Set bufferedAmountLowThreshold BEFORE sending starts
   dataChannel.bufferedAmountLowThreshold = lowWater;
 
-  // FIX #12: onbufferedamountlow set once here — restarts the loop reliably
+  // onbufferedamountlow restarts the loop when the buffer drains
   dataChannel.onbufferedamountlow = () => {
     if (stallGuardTimer) {
       clearTimeout(stallGuardTimer);
@@ -307,49 +305,14 @@ function sendFile() {
     }
   };
 
-  sendChunkFn = function sendChunk() {
-    if (isCancelled) return;
-    if (isPaused) return;
-
-    if (offset >= file.size) {
-      // Done
-      try { dataChannel.send('EOF'); } catch (_) {}
-      isTransferring = false;
-      showStatus('✓ File sent successfully!', 'success');
-      document.getElementById('sendBtn').disabled = false;
-      document.getElementById('pauseBtn').style.display = 'none';
-      document.getElementById('cancelBtn').style.display = 'none';
-      if (stallGuardTimer) clearTimeout(stallGuardTimer);
-      return;
-    }
-
-    // Backpressure check
-    if (dataChannel.bufferedAmount > maxBuffer) {
-      // FIX #12: Safety net — if onbufferedamountlow is somehow missed,
-      // this timer will restart the loop after 500ms
-      if (!stallGuardTimer) {
-        stallGuardTimer = setTimeout(() => {
-          stallGuardTimer = null;
-          if (!isPaused && !isCancelled && dataChannel.readyState === 'open') {
-            sendChunkFn();
-          }
-        }, 500);
-      }
-      return; // wait for onbufferedamountlow or the safety timer
-    }
-
-    const slice = file.slice(offset, offset + chunkSize);
-    reader.readAsArrayBuffer(slice);
-  };
-
-  reader.onload = e => {
+  // Handlers defined once, reused by each fresh FileReader
+  function onChunkLoad(e) {
     if (isCancelled) return;
 
     try {
       dataChannel.send(e.target.result);
       offset += e.target.result.byteLength;
 
-      // Update progress
       const percent = Math.round((offset / file.size) * 100);
       document.getElementById('sendProgressFill').style.width = percent + '%';
       document.getElementById('sendProgressFill').textContent = percent + '%';
@@ -362,7 +325,6 @@ function sendFile() {
       document.getElementById('sendStatus').textContent =
         `Sent: ${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
 
-      // Continue — sendChunk handles its own backpressure gate
       sendChunkFn();
     } catch (err) {
       isTransferring = false;
@@ -371,11 +333,47 @@ function sendFile() {
       showStatus('Error sending file: ' + err.message, 'error');
       document.getElementById('sendBtn').disabled = false;
     }
-  };
+  }
 
-  reader.onerror = () => {
+  function onChunkError() {
     showStatus('Error reading file!', 'error');
     document.getElementById('sendBtn').disabled = false;
+  }
+
+  sendChunkFn = function sendChunk() {
+    if (isCancelled) return;
+    if (isPaused) return;
+
+    if (offset >= file.size) {
+      try { dataChannel.send('EOF'); } catch (_) {}
+      isTransferring = false;
+      showStatus('✓ File sent successfully!', 'success');
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('pauseBtn').style.display = 'none';
+      document.getElementById('cancelBtn').style.display = 'none';
+      if (stallGuardTimer) clearTimeout(stallGuardTimer);
+      return;
+    }
+
+    // Backpressure check
+    if (dataChannel.bufferedAmount > maxBuffer) {
+      if (!stallGuardTimer) {
+        stallGuardTimer = setTimeout(() => {
+          stallGuardTimer = null;
+          if (!isPaused && !isCancelled && dataChannel.readyState === 'open') {
+            sendChunkFn();
+          }
+        }, 500);
+      }
+      return;
+    }
+
+    // ✅ Fresh FileReader every chunk — fixes the InvalidStateError stall
+    reader = new FileReader();
+    reader.onload = onChunkLoad;
+    reader.onerror = onChunkError;
+    const slice = file.slice(offset, offset + chunkSize);
+    reader.readAsArrayBuffer(slice);
   };
 
   // Kick off
