@@ -71,42 +71,42 @@ function handleFileSelect(isFolder) {
   document.getElementById('sendProgress').classList.add('show');
 }
 
-const dropZone = document.querySelector('.file-label');
+// FIX #2 — Use event delegation instead of querySelector at parse time
+// (the .file-label element is inside a hidden step when the script first runs)
+document.addEventListener('dragover', e => {
+  if (!e.target.closest('.file-label')) return;
+  e.preventDefault();
+  e.target.closest('.file-label').classList.add('drag-over');
+});
 
-if (dropZone) {
-  dropZone.addEventListener('dragover', e => {
-    e.preventDefault();
-    dropZone.classList.add('drag-over');
-  });
+document.addEventListener('dragleave', e => {
+  if (!e.target.closest('.file-label')) return;
+  e.target.closest('.file-label').classList.remove('drag-over');
+});
 
-  dropZone.addEventListener('dragleave', () => {
-    dropZone.classList.remove('drag-over');
-  });
+document.addEventListener('drop', async e => {
+  if (!e.target.closest('.file-label')) return;
+  e.preventDefault();
+  e.target.closest('.file-label').classList.remove('drag-over');
 
-  dropZone.addEventListener('drop', async e => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
+  const files = Array.from(e.dataTransfer.files);
+  if (!files.length) return;
 
-    const files = Array.from(e.dataTransfer.files);
-    if (!files.length) return;
+  if (files.length === 1 && files[0].size === 0) {
+    showStatus('⚠️ Folder drag not supported. Use "Select Folder" button.', 'error');
+    return;
+  }
 
-    if (files.length === 1 && files[0].size === 0) {
-      showStatus('⚠️ Folder drag not supported. Use "Select Folder" button.', 'error');
-      return;
-    }
+  if (files.length > 1) {
+    await zipFolder(files);
+    return;
+  }
 
-    if (files.length > 1) {
-      await zipFolder(files);
-      return;
-    }
+  selectedFile = files[0];
+  updateFileInfo([selectedFile]);
+  updateSendButtonState();
+});
 
-    selectedFile = files[0];
-    updateFileInfo([selectedFile]);
-    updateSendButtonState();
-  });
-}
-
-// FIX #3: Only check readyState — no setTimeout guessing
 function updateSendButtonState() {
   const btn = document.getElementById('sendBtn');
   if (!btn) return;
@@ -147,6 +147,15 @@ async function zipFolder(files) {
 // ==========================
 async function generatePIN() {
   try {
+    // FIX #2 — Reset all stale state from any previous session
+    isConnected = false;
+    isTransferring = false;
+    isPaused = false;
+    isCancelled = false;
+    selectedFile = null;
+    dataChannel = null;
+    if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+
     showStatus('Generating PIN...', 'info');
 
     pc = new RTCPeerConnection({
@@ -189,7 +198,6 @@ async function generatePIN() {
       document.getElementById('pinDisplay').style.display = 'block';
       showStatus(`PIN generated: ${res.pin}`, 'success');
 
-      // Move to waiting step
       showStep('step-waiting');
 
       socket.on('answer-ready', (data) => {
@@ -212,8 +220,6 @@ function setupDataChannel() {
   dataChannel = pc.createDataChannel('file');
   dataChannel.binaryType = 'arraybuffer';
 
-  // FIX #3: This is the ONLY place we enable the send button.
-  // No setTimeout, no guessing — we wait for the real open event.
   dataChannel.onopen = () => {
     showStatus('✓ Connected! Select a file to send.', 'success');
     updateSendButtonState();
@@ -244,7 +250,7 @@ function setupDataChannel() {
 }
 
 // ==========================
-// FILE TRANSFER — FIX #12 (Backpressure)
+// FILE TRANSFER
 // ==========================
 function sendFile() {
   isCancelled = false;
@@ -260,13 +266,13 @@ function sendFile() {
     return;
   }
 
-  const chunkSize = 64 * 1024;         // 64 KB per chunk
-  const maxBuffer = 8 * 1024 * 1024;   // 8 MB high-water mark
-  const lowWater  = 2 * 1024 * 1024;   // 2 MB low-water mark (when to resume)
+  const chunkSize = 64 * 1024;        // 64 KB per chunk
+  const maxBuffer = 8 * 1024 * 1024;  // 8 MB high-water mark
+  const lowWater  = 2 * 1024 * 1024;  // 2 MB low-water mark
   const file = selectedFile;
   let offset = 0;
   const startTime = Date.now();
-  let stallGuardTimer = null;           // FIX #12: safety restart timer
+  let stallGuardTimer = null;
 
   // UI setup
   document.getElementById('sendProgress').classList.add('show');
@@ -291,10 +297,10 @@ function sendFile() {
     return;
   }
 
-  // Set bufferedAmountLowThreshold BEFORE sending starts
+  reader = new FileReader();
+
   dataChannel.bufferedAmountLowThreshold = lowWater;
 
-  // onbufferedamountlow restarts the loop when the buffer drains
   dataChannel.onbufferedamountlow = () => {
     if (stallGuardTimer) {
       clearTimeout(stallGuardTimer);
@@ -305,8 +311,38 @@ function sendFile() {
     }
   };
 
-  // Handlers defined once, reused by each fresh FileReader
-  function onChunkLoad(e) {
+  sendChunkFn = function sendChunk() {
+    if (isCancelled) return;
+    if (isPaused) return;
+
+    if (offset >= file.size) {
+      try { dataChannel.send('EOF'); } catch (_) {}
+      isTransferring = false;
+      showStatus('✓ File sent successfully!', 'success');
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('pauseBtn').style.display = 'none';
+      document.getElementById('cancelBtn').style.display = 'none';
+      if (stallGuardTimer) clearTimeout(stallGuardTimer);
+      return;
+    }
+
+    if (dataChannel.bufferedAmount > maxBuffer) {
+      if (!stallGuardTimer) {
+        stallGuardTimer = setTimeout(() => {
+          stallGuardTimer = null;
+          if (!isPaused && !isCancelled && dataChannel.readyState === 'open') {
+            sendChunkFn();
+          }
+        }, 500);
+      }
+      return;
+    }
+
+    const slice = file.slice(offset, offset + chunkSize);
+    reader.readAsArrayBuffer(slice);
+  };
+
+  reader.onload = e => {
     if (isCancelled) return;
 
     try {
@@ -325,7 +361,11 @@ function sendFile() {
       document.getElementById('sendStatus').textContent =
         `Sent: ${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
 
-      sendChunkFn();
+      // FIX #1 — defer next chunk to next event loop tick so the FileReader
+      // is fully released before we call readAsArrayBuffer() again.
+      // This prevents the silent stall at ~5% on large files.
+      setTimeout(sendChunkFn, 0);
+
     } catch (err) {
       isTransferring = false;
       if (dataChannel.readyState !== 'open') return;
@@ -333,50 +373,13 @@ function sendFile() {
       showStatus('Error sending file: ' + err.message, 'error');
       document.getElementById('sendBtn').disabled = false;
     }
-  }
-
-  function onChunkError() {
-    showStatus('Error reading file!', 'error');
-    document.getElementById('sendBtn').disabled = false;
-  }
-
-  sendChunkFn = function sendChunk() {
-    if (isCancelled) return;
-    if (isPaused) return;
-
-    if (offset >= file.size) {
-      try { dataChannel.send('EOF'); } catch (_) {}
-      isTransferring = false;
-      showStatus('✓ File sent successfully!', 'success');
-      document.getElementById('sendBtn').disabled = false;
-      document.getElementById('pauseBtn').style.display = 'none';
-      document.getElementById('cancelBtn').style.display = 'none';
-      if (stallGuardTimer) clearTimeout(stallGuardTimer);
-      return;
-    }
-
-    // Backpressure check
-    if (dataChannel.bufferedAmount > maxBuffer) {
-      if (!stallGuardTimer) {
-        stallGuardTimer = setTimeout(() => {
-          stallGuardTimer = null;
-          if (!isPaused && !isCancelled && dataChannel.readyState === 'open') {
-            sendChunkFn();
-          }
-        }, 500);
-      }
-      return;
-    }
-
-    // ✅ Fresh FileReader every chunk — fixes the InvalidStateError stall
-    reader = new FileReader();
-    reader.onload = onChunkLoad;
-    reader.onerror = onChunkError;
-    const slice = file.slice(offset, offset + chunkSize);
-    reader.readAsArrayBuffer(slice);
   };
 
-  // Kick off
+  reader.onerror = () => {
+    showStatus('Error reading file!', 'error');
+    document.getElementById('sendBtn').disabled = false;
+  };
+
   sendChunkFn();
 }
 
@@ -406,13 +409,8 @@ async function applyAnswerFromServer(answer) {
     await pc.setRemoteDescription(answer);
     isConnected = true;
 
-    // Move to file selection step (#10)
     showStep('step-transfer');
-
     showStatus('✓ Connected! Select a file to send.', 'success');
-
-    // FIX #3: Don't call updateSendButtonState here — dataChannel.onopen
-    // will do it when the channel is actually ready.
 
   } catch (err) {
     isTransferring = false;
