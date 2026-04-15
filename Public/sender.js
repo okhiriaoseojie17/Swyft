@@ -174,9 +174,7 @@ async function generatePIN() {
           urls: 'turn:openrelay.metered.ca:443',
           username: 'openrelay',
           credential: 'openrelay'
-        },
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
+        }
       ],
      iceTransportPolicy: "relay"
     });
