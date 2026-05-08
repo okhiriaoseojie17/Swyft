@@ -25,7 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ==========================
-// STEP NAVIGATION (#10)
+// STEP NAVIGATION
 // ==========================
 function showStep(stepId) {
   document.querySelectorAll('.step-page').forEach(el => {
@@ -61,6 +61,10 @@ async function connectWithPIN() {
     }
     showStatus('Connecting...', 'info');
 
+    // Clean up any previous connection
+    socket.off('ice-candidate');
+    if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+
     pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -89,30 +93,28 @@ async function connectWithPIN() {
 
       await pc.setRemoteDescription(response.offer);
 
-       pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit('ice-candidate', { pin, candidate: event.candidate });
-    }
-  };
+      // ✅ ICE candidate handler set up INSIDE connectWithPIN, not at top level
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', { pin, candidate: event.candidate });
+        }
+      };
 
-  socket.on('ice-candidate', async ({ candidate }) => {
-    try {
-      if (candidate) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      }
-    } catch (err) {
-      console.error('Error adding received ICE candidate:', err);
-    }
-  });
+      socket.on('ice-candidate', async ({ candidate }) => {
+        try {
+          if (candidate && pc) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          }
+        } catch (err) {
+          console.error('Error adding received ICE candidate:', err);
+        }
+      });
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-    
-
       socket.emit('send-answer', { pin, answer: pc.localDescription }, (res) => {
         if (res.success) {
-          // Move to receiving step (#10)
           showStep('step-receive');
 
           const downloadArea = document.getElementById('downloadArea');
@@ -132,18 +134,6 @@ async function connectWithPIN() {
   }
 }
 
-// After setting remote description and creating answer:
-pc.onicecandidate = (event) => {
-  if (event.candidate) {
-    socket.emit('ice-candidate', { pin: currentPIN, candidate: event.candidate });
-  }
-};
-
-const answer = await pc.createAnswer();
-await pc.setLocalDescription(answer);
-socket.emit('answer', { pin: currentPIN, sdp: pc.localDescription });
-
-
 // ==========================
 // DATA CHANNEL (RECEIVER)
 // ==========================
@@ -158,11 +148,11 @@ function setupDataChannel() {
     let startTime = null;
     let currentBuffers = [];
 
-    const progressFill    = document.getElementById('receiveProgressFill');
-    const statusText      = document.getElementById('receiveStatus');
+    const progressFill      = document.getElementById('receiveProgressFill');
+    const statusText        = document.getElementById('receiveStatus');
     const downloadContainer = document.getElementById('downloadArea');
-    const cancelBtn       = document.getElementById('receiverCancelBtn');
-    const progressWrap    = document.getElementById('receiveProgress');
+    const cancelBtn         = document.getElementById('receiverCancelBtn');
+    const progressWrap      = document.getElementById('receiveProgress');
 
     receiveChannel.onopen = () => {
       isConnected = true;
@@ -176,7 +166,23 @@ function setupDataChannel() {
       // ── Text messages ──────────────────────────────
       if (typeof e.data === 'string') {
 
-        // CANCELLED by sender
+        // ✅ DISCONNECT — sender ended the connection
+        if (e.data === 'DISCONNECT') {
+          isConnected = false;
+          isReceiving = false;
+
+          // Clean up any in-progress transfer
+          currentBuffers = [];
+          if (progressFill) { progressFill.style.width = '0%'; progressFill.textContent = '0%'; }
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          if (progressWrap) progressWrap.classList.remove('show');
+
+          showStatus('Sender ended the connection', 'info');
+          setTimeout(() => showStep('step-pin'), 1500);
+          return;
+        }
+
+        // CANCEL — sender cancelled the transfer
         if (e.data === 'CANCEL') {
           isReceiving = false;
           showStatus('❌ Sender cancelled transfer', 'error');
@@ -192,14 +198,14 @@ function setupDataChannel() {
           isReceiving = false;
 
           if (expectedSize > 0 && receivedSize === 0) {
-           showStatus('❌ Transfer failed: no data received', 'error');
-           if (cancelBtn) cancelBtn.style.display = 'none';
-           return;
-        }
-  
+            showStatus('❌ Transfer failed: no data received', 'error');
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            return;
+          }
+
           if (!fileMetadata) {
-           console.warn('Received EOF without metadata — ignoring stale signal');
-           return;
+            console.warn('Received EOF without metadata — ignoring stale signal');
+            return;
           }
 
           const blob = new Blob(currentBuffers, {
@@ -329,18 +335,32 @@ async function extractZipAndShowFiles(blob, container) {
   }
 }
 
+// ==========================
+// BACK BUTTON
+// ==========================
 function goBack() {
   if (isReceiving) {
     showStatus('❌ Cannot leave while receiving file!', 'error');
     return;
   }
-  if (isConnected && pc && pc.connectionState === 'connected') {
-    showStatus('❌ Connection is still active. Wait for transfer to complete.', 'error');
-    return;
+
+  // Clean up gracefully before navigating
+  try {
+    if (receiveChannel && receiveChannel.readyState === 'open') {
+      receiveChannel.send('DISCONNECT');
+      receiveChannel.close();
+    }
+    if (pc) pc.close();
+  } catch (e) {
+    console.log('Cleanup error on back:', e);
   }
+
   window.location.href = 'index.html';
 }
 
+// ==========================
+// CANCEL RECEIVE
+// ==========================
 function cancelReceive() {
   if (receiveChannel && receiveChannel.readyState === 'open') {
     try { receiveChannel.send('CANCEL'); } catch (_) {}
@@ -348,11 +368,11 @@ function cancelReceive() {
 
   isReceiving = false;
 
-  const progressFill    = document.getElementById('receiveProgressFill');
-  const statusText      = document.getElementById('receiveStatus');
-  const progressWrap    = document.getElementById('receiveProgress');
-  const download        = document.getElementById('downloadArea');
-  const cancelBtn       = document.getElementById('receiverCancelBtn');
+  const progressFill = document.getElementById('receiveProgressFill');
+  const statusText   = document.getElementById('receiveStatus');
+  const progressWrap = document.getElementById('receiveProgress');
+  const download     = document.getElementById('downloadArea');
+  const cancelBtn    = document.getElementById('receiverCancelBtn');
 
   if (progressFill) { progressFill.style.width = '0%'; progressFill.textContent = '0%'; }
   if (statusText) statusText.textContent = 'Waiting for file...';
@@ -361,12 +381,4 @@ function cancelReceive() {
   if (cancelBtn) cancelBtn.style.display = 'none';
 
   showStatus('❌ Transfer cancelled', 'info');
-}
-
-if (e.data === 'DISCONNECT') {
-  isConnected = false;
-  isReceiving = false;
-  showStatus('Sender ended the connection', 'info');
-  setTimeout(() => showStep('step-pin'), 1500);
-  return;
 }
