@@ -63,6 +63,8 @@ async function connectWithPIN() {
 
     pc = new RTCPeerConnection({
       iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:openrelay.metered.ca:80' },
         {
           urls: 'turn:openrelay.metered.ca:80',
@@ -74,7 +76,7 @@ async function connectWithPIN() {
           username: 'openrelay',
           credential: 'openrelay'
         }
-      ]
+      ],
     });
 
     setupDataChannel();
@@ -86,10 +88,27 @@ async function connectWithPIN() {
       }
 
       await pc.setRemoteDescription(response.offer);
+
+       pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit('ice-candidate', { pin, candidate: event.candidate });
+    }
+  };
+
+  socket.on('ice-candidate', async ({ candidate }) => {
+    try {
+      if (candidate) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    } catch (err) {
+      console.error('Error adding received ICE candidate:', err);
+    }
+  });
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      await waitForICE(pc);
+    
 
       socket.emit('send-answer', { pin, answer: pc.localDescription }, (res) => {
         if (res.success) {
@@ -113,26 +132,17 @@ async function connectWithPIN() {
   }
 }
 
-// ==========================
-// ICE HELPER
-// ==========================
-function waitForICE(pc) {
-  return new Promise(resolve => {
-    if (pc.iceGatheringState === 'complete') {
-      resolve();
-      return;
-    }
+// After setting remote description and creating answer:
+pc.onicecandidate = (event) => {
+  if (event.candidate) {
+    socket.emit('ice-candidate', { pin: currentPIN, candidate: event.candidate });
+  }
+};
 
-    const timeout = setTimeout(() => resolve(), 2000);
+const answer = await pc.createAnswer();
+await pc.setLocalDescription(answer);
+socket.emit('answer', { pin: currentPIN, sdp: pc.localDescription });
 
-    pc.onicegatheringstatechange = () => {
-      if (pc.iceGatheringState === 'complete') {
-        clearTimeout(timeout);
-        resolve();
-      }
-    };
-  });
-}
 
 // ==========================
 // DATA CHANNEL (RECEIVER)
@@ -181,10 +191,15 @@ function setupDataChannel() {
         if (e.data === 'EOF') {
           isReceiving = false;
 
-          if (!currentBuffers.length || receivedSize === 0) {
-            showStatus('Transfer cancelled before data arrived', 'info');
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            return;
+          if (expectedSize > 0 && receivedSize === 0) {
+           showStatus('❌ Transfer failed: no data received', 'error');
+           if (cancelBtn) cancelBtn.style.display = 'none';
+           return;
+        }
+  
+          if (!fileMetadata) {
+           console.warn('Received EOF without metadata — ignoring stale signal');
+           return;
           }
 
           const blob = new Blob(currentBuffers, {
@@ -346,4 +361,12 @@ function cancelReceive() {
   if (cancelBtn) cancelBtn.style.display = 'none';
 
   showStatus('❌ Transfer cancelled', 'info');
+}
+
+if (e.data === 'DISCONNECT') {
+  isConnected = false;
+  isReceiving = false;
+  showStatus('Sender ended the connection', 'info');
+  setTimeout(() => showStep('step-pin'), 1500);
+  return;
 }

@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Swyft - Send Files</title>
   <link rel="stylesheet" href="style.css">
+
+ <link rel="icon" type="image/png" href="/Swyft/Public/favicon/favicon-96x96.png?v=v1" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="/Swyft/Public/favicon/favicon.svg?v=v1" />
+<link rel="shortcut icon" href="/Swyft/Public/favicon/favicon.ico?v=v1" />
+<link rel="apple-touch-icon" sizes="180x180" href="/Swyft/Public/favicon/apple-touch-icon.png?v=v1" />
+<meta name="apple-mobile-web-app-title" content="Swyft" />
+<link rel="manifest" href="/Swyft/Public/favicon/site.webmanifest?v=v1" />
+
   <style>
     /* Step navigation styles (#10) */
     .step-page {
@@ -106,6 +114,11 @@
         <div id="sendStatus" class="transfer-status"></div>
       </div>
     </div>
+
+   <button id="endConnectionBtn" onclick="endConnection()" 
+        style="background:#6c757d; margin-top:10px;">
+  🔌 End Connection
+</button>
 
     <div id="senderStatus" class="status"></div>
   </div>

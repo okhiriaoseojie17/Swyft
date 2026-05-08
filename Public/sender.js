@@ -66,7 +66,7 @@ function handleFileSelect(isFolder) {
 
   selectedFile = files[0];
   updateFileInfo([selectedFile]);
-  setTimeout(updateSendButtonState, 0);
+  updateSendButtonState();
 
   document.getElementById('sendProgress').classList.add('show');
 }
@@ -110,13 +110,14 @@ document.addEventListener('drop', async e => {
 function updateSendButtonState() {
   const btn = document.getElementById('sendBtn');
   if (!btn) return;
-
-  const ready =
-    dataChannel &&
-    dataChannel.readyState === 'open' &&
-    selectedFile;
-
-  btn.disabled = !ready;
+  
+  const channelReady = dataChannel && dataChannel.readyState === 'open';
+  const fileReady = selectedFile !== null;
+  
+  btn.disabled = !(channelReady && fileReady);
+  
+  // Debug log
+  console.log('Button state:', { channelReady, fileReady, disabled: btn.disabled });
 }
 
 // ==========================
@@ -164,6 +165,8 @@ async function generatePIN() {
 
     pc = new RTCPeerConnection({
       iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:openrelay.metered.ca:80' },
         {
           urls: 'turn:openrelay.metered.ca:80',
@@ -176,14 +179,28 @@ async function generatePIN() {
           credential: 'openrelay'
         }
       ],
-     iceTransportPolicy: "relay"
     });
 
     setupDataChannel();
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await waitForICE(pc);
+
+    pc.onicecandidate = (event) => {
+  if (event.candidate) {
+    socket.emit('ice-candidate', { pin: currentPIN, candidate: event.candidate });
+  }
+};
+
+socket.on('ice-candidate', async ({ candidate }) => {
+  try {
+    if (candidate) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  } catch (err) {
+    console.error('Error adding received ICE candidate:', err);
+  }
+});
 
     if (!socket.connected) {
       showStatus('Connecting to server...', 'info');
@@ -271,13 +288,13 @@ function sendFile() {
     return;
   }
 
-  const chunkSize = 64 * 1024;        // 64 KB per chunk
-  const maxBuffer = 8 * 1024 * 1024;  // 8 MB high-water mark
-  const lowWater  = 2 * 1024 * 1024;  // 2 MB low-water mark
+  const chunkSize = 256 * 1024;        // 64 KB per chunk
+  const maxBuffer = 16 * 1024 * 1024;  // 8 MB high-water mark
+  const lowWater  = 4 * 1024 * 1024;  // 2 MB low-water mark
   const file = selectedFile;
   let offset = 0;
   const startTime = Date.now();
-  let stallGuardTimer = null;
+  let isReading = false;
 
   // UI setup
   document.getElementById('sendProgress').classList.add('show');
@@ -307,19 +324,15 @@ function sendFile() {
   dataChannel.bufferedAmountLowThreshold = lowWater;
 
   dataChannel.onbufferedamountlow = () => {
-    if (stallGuardTimer) {
-      clearTimeout(stallGuardTimer);
-      stallGuardTimer = null;
-    }
-    if (!isPaused && !isCancelled) {
+    if (!isPaused && !isCancelled && !isReading) {
       sendChunkFn();
     }
   };
 
   sendChunkFn = function sendChunk() {
-    if (isCancelled) return;
-    if (isPaused) return;
-
+    if (isCancelled || isPaused) return;
+    if (isReading) return; // ← critical: don't re-enter while reading
+    
     if (offset >= file.size) {
       try { dataChannel.send('EOF'); } catch (_) {}
       isTransferring = false;
@@ -327,34 +340,28 @@ function sendFile() {
       document.getElementById('sendBtn').disabled = false;
       document.getElementById('pauseBtn').style.display = 'none';
       document.getElementById('cancelBtn').style.display = 'none';
-      if (stallGuardTimer) clearTimeout(stallGuardTimer);
       return;
     }
 
+    // If buffer full, wait for onbufferedamountlow to re-trigger us
     if (dataChannel.bufferedAmount > maxBuffer) {
-      if (!stallGuardTimer) {
-        stallGuardTimer = setTimeout(() => {
-          stallGuardTimer = null;
-          if (!isPaused && !isCancelled && dataChannel.readyState === 'open') {
-            sendChunkFn();
-          }
-        }, 500);
-      }
-      return;
+      return; // onbufferedamountlow will call us again
     }
 
+    isReading = true;
     const slice = file.slice(offset, offset + chunkSize);
     reader.readAsArrayBuffer(slice);
   };
 
   reader.onload = e => {
+    isReading = false;
     if (isCancelled) return;
 
     try {
       dataChannel.send(e.target.result);
       offset += e.target.result.byteLength;
 
-      const percent = Math.round((offset / file.size) * 100);
+       const percent = Math.round((offset / file.size) * 100);
       document.getElementById('sendProgressFill').style.width = percent + '%';
       document.getElementById('sendProgressFill').textContent = percent + '%';
 
@@ -362,14 +369,14 @@ function sendFile() {
       const totalMB = (file.size / (1024 * 1024)).toFixed(2);
       const elapsedTime = (Date.now() - startTime) / 1000;
       const speed = elapsedTime > 0 ? (offset / (1024 * 1024)) / elapsedTime : 0;
+      const etaSec = speed > 0 ? ((file.size - offset) / (1024 * 1024)) / speed : 0;
 
-      document.getElementById('sendStatus').textContent =
-        `Sent: ${sentMB} MB / ${totalMB} MB (${speed.toFixed(2)} MB/s)`;
+     document.getElementById('sendStatus').textContent =
+        `${sentMB} / ${totalMB} MB @ ${speed.toFixed(2)} MB/s · ETA ${Math.round(etaSec)}s`;
 
-      // FIX #1 — defer next chunk to next event loop tick so the FileReader
-      // is fully released before we call readAsArrayBuffer() again.
-      // This prevents the silent stall at ~5% on large files.
-      setTimeout(sendChunkFn, 0);
+      if (dataChannel.bufferedAmount <= maxBuffer) {
+        Promise.resolve().then(sendChunkFn);
+      }
 
     } catch (err) {
       isTransferring = false;
@@ -381,6 +388,7 @@ function sendFile() {
   };
 
   reader.onerror = () => {
+    isReading = false;
     showStatus('Error reading file!', 'error');
     document.getElementById('sendBtn').disabled = false;
   };
@@ -388,26 +396,18 @@ function sendFile() {
   sendChunkFn();
 }
 
-// ==========================
-// ICE HELPER
-// ==========================
-function waitForICE(pc) {
-  return new Promise(resolve => {
-    if (pc.iceGatheringState === 'complete') {
-      resolve();
-      return;
-    }
+// After creating the offer and setting local description, send immediately:
+pc.onicecandidate = (event) => {
+  if (event.candidate) {
+    socket.emit('ice-candidate', { pin: currentPIN, candidate: event.candidate });
+  }
+};
 
-    const timeout = setTimeout(() => resolve(), 2000);
+// Send offer right away — don't wait for ICE
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+socket.emit('offer', { pin: currentPIN, sdp: pc.localDescription });
 
-    pc.onicegatheringstatechange = () => {
-      if (pc.iceGatheringState === 'complete') {
-        clearTimeout(timeout);
-        resolve();
-      }
-    };
-  });
-}
 
 async function applyAnswerFromServer(answer) {
   try {
@@ -448,37 +448,48 @@ function togglePause() {
     btn.textContent = '⏸️ Pause';
     btn.style.background = '#ff9800';
     showStatus('Resuming transfer...', 'info');
-    if (sendChunkFn) sendChunkFn();
+     if (sendChunkFn && !isCancelled && dataChannel && dataChannel.readyState === 'open') {
+      setTimeout(() => sendChunkFn(), 0);
+     }
   }
 }
 
 function cancelTransfer() {
-  if (confirm('Are you sure you want to cancel this transfer?')) {
-    isPaused = false;
-    isCancelled = true;
-    isTransferring = false;
+  if (!confirm('Are you sure you want to cancel this transfer?')) return;
+  
+  isPaused = false;
+  isCancelled = true;
+  isTransferring = false;
 
-    if (reader && reader.readyState === FileReader.LOADING) {
-      reader.abort();
-    }
-
-    try {
-      if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send('CANCEL');
-      }
-    } catch (e) {
-      console.log('Could not send cancel signal');
-    }
-
-    document.getElementById('sendProgressFill').style.width = '0%';
-    document.getElementById('sendProgressFill').textContent = '0%';
-    document.getElementById('sendStatus').textContent = '';
-    document.getElementById('sendBtn').disabled = false;
-    document.getElementById('pauseBtn').style.display = 'none';
-    document.getElementById('cancelBtn').style.display = 'none';
-
-    showStatus('Transfer cancelled', 'info');
+  if (reader && reader.readyState === FileReader.LOADING) {
+    reader.abort();
   }
+
+  try {
+    if (dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send('CANCEL');
+    }
+  } catch (e) {
+    console.log('Could not send cancel signal');
+  }
+
+  // Reset UI to file selection state
+  selectedFile = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('folderInput').value = '';
+  document.getElementById('fileInfo').classList.remove('show');
+  document.getElementById('fileInfo').innerHTML = '';
+  
+  document.getElementById('sendProgress').classList.remove('show');
+  document.getElementById('sendProgressFill').style.width = '0%';
+  document.getElementById('sendProgressFill').textContent = '0%';
+  document.getElementById('sendStatus').textContent = '';
+  
+  document.getElementById('sendBtn').disabled = true; // no file selected now
+  document.getElementById('pauseBtn').style.display = 'none';
+  document.getElementById('cancelBtn').style.display = 'none';
+
+  showStatus('Transfer cancelled. Select another file to send.', 'info');
 }
 
 function copyPIN() {
@@ -504,4 +515,33 @@ function updateFileInfo(files) {
   }
 
   fileInfo.classList.add('show');
+}
+
+function endConnection() {
+  if (isTransferring) {
+    if (!confirm('A transfer is in progress. End connection anyway?')) return;
+  }
+  
+  try {
+    if (dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send('DISCONNECT');
+      dataChannel.close();
+    }
+    if (pc) pc.close();
+  } catch (e) {
+    console.log('Error closing connection:', e);
+  }
+  
+  // Reset all state
+  isConnected = false;
+  isTransferring = false;
+  selectedFile = null;
+  currentPIN = null;
+  dataChannel = null;
+  pc = null;
+  
+  // Reset UI
+  document.getElementById('pinCode').textContent = '------';
+  showStep('step-pin');
+  showStatus('Connection ended', 'info');
 }
