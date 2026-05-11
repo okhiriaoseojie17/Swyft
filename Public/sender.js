@@ -1,4 +1,4 @@
-// ==========================
+ // ==========================
 // WebRTC + File Transfer
 // ==========================
 let pc;
@@ -149,11 +149,11 @@ async function zipFolder(files) {
 async function generatePIN() {
   try {
     // Reset all stale state from any previous session
+    // FIX: Do NOT reset selectedFile here — user may have already picked a file
     isConnected = false;
     isTransferring = false;
     isPaused = false;
     isCancelled = false;
-    selectedFile = null;
     dataChannel = null;
     if (pc) { try { pc.close(); } catch (_) {} pc = null; }
  
@@ -183,7 +183,7 @@ async function generatePIN() {
  
     setupDataChannel();
  
-    // ✅ Set up ICE candidate handler BEFORE creating offer
+    // Set up ICE candidate handler BEFORE creating offer
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         socket.emit('ice-candidate', { pin: currentPIN, candidate: event.candidate });
@@ -244,7 +244,10 @@ function setupDataChannel() {
   dataChannel.binaryType = 'arraybuffer';
  
   dataChannel.onopen = () => {
+    isConnected = true;
     showStatus('✓ Connected! Select a file to send.', 'success');
+    // FIX: Now that channel is open, re-check button state —
+    // selectedFile may already be set if user picked before connecting
     updateSendButtonState();
   };
  
@@ -270,7 +273,7 @@ function setupDataChannel() {
       document.getElementById('cancelBtn').style.display = 'none';
     }
  
-    // ✅ Handle receiver-initiated disconnect
+    // Handle receiver-initiated disconnect
     if (typeof e.data === 'string' && e.data === 'DISCONNECT') {
       handleRemoteDisconnect();
     }
@@ -310,6 +313,7 @@ function handleRemoteDisconnect() {
 // FILE TRANSFER
 // ==========================
 function sendFile() {
+  isPaused = false;
   isCancelled = false;
   isTransferring = true;
  
@@ -433,7 +437,9 @@ async function applyAnswerFromServer(answer) {
  
     showStep('step-transfer');
     showStatus('✓ Connected! Select a file to send.', 'success');
-    updateSendButtonState();
+    // FIX: dataChannel.onopen fires after ICE + DTLS complete, which happens
+    // after setRemoteDescription. Don't call updateSendButtonState() here
+    // because the channel isn't open yet — onopen will call it when ready.
  
   } catch (err) {
     isTransferring = false;
@@ -446,24 +452,27 @@ async function applyAnswerFromServer(answer) {
 // BACK BUTTON
 // ==========================
 function goBack() {
-  // ✅ Allow going back if not actively transferring
   if (isTransferring) {
     showStatus('❌ Cannot leave while file transfer is in progress!', 'error');
     return;
   }
  
-  // Clean up connection gracefully before navigating
   try {
     if (dataChannel && dataChannel.readyState === 'open') {
       dataChannel.send('DISCONNECT');
-      dataChannel.close();
+      // FIX: Delay closing so the DISCONNECT message transmits before teardown
+      setTimeout(() => {
+        try { dataChannel.close(); } catch (_) {}
+        try { if (pc) pc.close(); } catch (_) {}
+      }, 300);
+    } else {
+      if (pc) pc.close();
     }
-    if (pc) pc.close();
   } catch (e) {
     console.log('Cleanup error on back:', e);
   }
  
-  window.location.href = 'index.html';
+  setTimeout(() => { window.location.href = 'index.html'; }, 350);
 }
  
 function togglePause() {
@@ -552,13 +561,19 @@ function endConnection() {
   if (isTransferring) {
     if (!confirm('A transfer is in progress. End connection anyway?')) return;
   }
- 
+
+  // FIX: Send DISCONNECT first, then delay teardown so the message
+  // has time to reach the receiver before the channel/PC closes
   try {
     if (dataChannel && dataChannel.readyState === 'open') {
       dataChannel.send('DISCONNECT');
-      dataChannel.close();
+      setTimeout(() => {
+        try { dataChannel.close(); } catch (_) {}
+        try { if (pc) pc.close(); } catch (_) {}
+      }, 300);
+    } else {
+      try { if (pc) pc.close(); } catch (_) {}
     }
-    if (pc) pc.close();
   } catch (e) {
     console.log('Error closing connection:', e);
   }
