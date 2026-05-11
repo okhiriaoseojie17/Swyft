@@ -2,6 +2,9 @@ const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 const path = require('path');
+const fetch = require('node-fetch');
+
+console.log('Node version:', process.version);
 
 const app = express();
 const server = http.createServer(app);
@@ -47,19 +50,19 @@ app.get('/ice-servers', async (req, res) => {
     }
     try {
       const url = `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`;
-      console.log('Metered: fetching', url.replace(meteredApiKey, '***'));
+      console.log('Metered: fetching...');
       const r = await fetch(url);
-      const text = await r.text();
-      console.log('Metered: raw response:', text.slice(0, 200));
-      const servers = JSON.parse(text);
+      console.log('Metered: status:', r.status);
+      const servers = await r.json();
+      console.log('Metered: response:', JSON.stringify(servers).slice(0, 200));
       if (Array.isArray(servers) && servers.length > 0) {
         console.log('✅ Using Metered TURN servers:', servers.length);
         return servers;
       }
-      console.log('Metered: returned empty or invalid array:', text.slice(0, 100));
+      console.log('Metered: returned empty array');
       return null;
     } catch (e) {
-      console.warn('Metered failed:', e.message);
+      console.error('Metered FULL ERROR:', e);
       return null;
     }
   }
