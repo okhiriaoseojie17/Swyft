@@ -65,23 +65,16 @@ async function connectWithPIN() {
     socket.off('ice-candidate');
     if (pc) { try { pc.close(); } catch (_) {} pc = null; }
 
-    pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:openrelay.metered.ca:80' },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelay',
-          credential: 'openrelay'
-        }
-      ],
-    });
+    let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+      const iceRes = await fetch('https://swyft-q8lf.onrender.com/ice-servers');
+      iceServers = await iceRes.json();
+      console.log('ICE servers loaded:', iceServers.length, 'entries');
+    } catch (e) {
+      console.warn('Could not fetch ICE servers, using STUN only:', e.message);
+    }
+
+    pc = new RTCPeerConnection({ iceServers });
 
     setupDataChannel();
 
