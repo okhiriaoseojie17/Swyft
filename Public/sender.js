@@ -1,4 +1,4 @@
- // ==========================
+// ==========================
 // WebRTC + File Transfer
 // ==========================
 let pc;
@@ -148,88 +148,103 @@ async function zipFolder(files) {
 // ==========================
 async function generatePIN() {
   try {
-    // Reset all stale state from any previous session
-    // FIX: Do NOT reset selectedFile here — user may have already picked a file
     isConnected = false;
     isTransferring = false;
     isPaused = false;
     isCancelled = false;
     dataChannel = null;
     if (pc) { try { pc.close(); } catch (_) {} pc = null; }
- 
-    // Remove any old socket listeners to avoid duplicates on regeneration
+
     socket.off('answer-ready');
     socket.off('ice-candidate');
- 
+
     showStatus('Generating PIN...', 'info');
- 
+
     pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:openrelay.metered.ca:80' },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelay',
-          credential: 'openrelay'
-        }
+        { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelay', credential: 'openrelay' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelay', credential: 'openrelay' }
       ],
     });
- 
+
+    // Log connection state changes so we can see what's happening
+    pc.onconnectionstatechange = () => {
+      console.log('pc.connectionState:', pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        showStatus('✓ Connected! Select a file to send.', 'success');
+        updateSendButtonState();
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      console.log('pc.iceConnectionState:', pc.iceConnectionState);
+    };
+
     setupDataChannel();
- 
-    // Set up ICE candidate handler BEFORE creating offer
+
+    // Trickle ICE: send candidates to the server as they arrive,
+    // but only after we have a PIN to tag them with
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
+      if (event.candidate && currentPIN) {
         socket.emit('ice-candidate', { pin: currentPIN, candidate: event.candidate });
       }
     };
- 
+
     socket.on('ice-candidate', async ({ candidate }) => {
       try {
         if (candidate && pc) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         }
       } catch (err) {
-        console.error('Error adding received ICE candidate:', err);
+        console.error('Error adding ICE candidate:', err);
       }
     });
- 
+
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
- 
+
+    // KEY FIX: wait for ICE gathering to complete before sending the offer.
+    // Without this the offer has no candidates and the connection never opens.
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') {
+        resolve();
+      } else {
+        pc.onicegatheringstatechange = () => {
+          console.log('iceGatheringState:', pc.iceGatheringState);
+          if (pc.iceGatheringState === 'complete') resolve();
+        };
+        // Safety timeout: if gathering stalls after 5s, send whatever we have
+        setTimeout(resolve, 5000);
+      }
+    });
+
     if (!socket.connected) {
       showStatus('Connecting to server...', 'info');
-      await new Promise((resolve) => {
-        socket.once('connect', resolve);
-      });
+      await new Promise((resolve) => socket.once('connect', resolve));
     }
- 
+
     socket.emit('create-room', pc.localDescription, (res) => {
       if (!res || !res.success) {
         showStatus(res?.message || 'Server error', 'error');
         return;
       }
- 
+
       currentPIN = res.pin;
       document.getElementById('pinCode').textContent = res.pin;
       document.getElementById('pinDisplay').style.display = 'block';
       showStatus(`PIN generated: ${res.pin}`, 'success');
- 
+
       showStep('step-waiting');
- 
+
       socket.on('answer-ready', (data) => {
         if (data.pin === currentPIN) {
           applyAnswerFromServer(data.answer);
         }
       });
     });
- 
+
   } catch (err) {
     isTransferring = false;
     showStatus(err.message, 'error');

@@ -113,6 +113,18 @@ async function connectWithPIN() {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
+      // KEY FIX: wait for ICE gathering to complete before sending the answer
+      await new Promise((resolve) => {
+        if (pc.iceGatheringState === 'complete') {
+          resolve();
+        } else {
+          pc.onicegatheringstatechange = () => {
+            if (pc.iceGatheringState === 'complete') resolve();
+          };
+          setTimeout(resolve, 5000);
+        }
+      });
+
       socket.emit('send-answer', { pin, answer: pc.localDescription }, (res) => {
         if (res.success) {
           showStep('step-receive');
