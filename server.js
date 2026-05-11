@@ -18,6 +18,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ICE servers endpoint — tries Metered first, falls back to Xirsys if Metered fails/empty.
 // All credentials are read from Render environment variables — never hardcoded.
 app.get('/ice-servers', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
   const meteredApiKey  = process.env.METERED_API_KEY;
   const meteredAppName = process.env.METERED_APP_NAME;
   const xirsysIdent    = process.env.XIRSYS_IDENT;
