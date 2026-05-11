@@ -198,4 +198,10 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`🚀 Swyft Server running on http://localhost:${PORT}`);
+  console.log('ENV CHECK → METERED_APP_NAME:', process.env.METERED_APP_NAME || 'NOT SET');
+  console.log('ENV CHECK → METERED_API_KEY:', process.env.METERED_API_KEY ? '✅ set' : 'NOT SET');
+  console.log('ENV CHECK → XIRSYS_IDENT:', process.env.XIRSYS_IDENT || 'NOT SET');
+  console.log('ENV CHECK → XIRSYS_SECRET:', process.env.XIRSYS_SECRET ? '✅ set' : 'NOT SET');
+  console.log('ENV CHECK → XIRSYS_CHANNEL:', process.env.XIRSYS_CHANNEL || 'NOT SET');
 });
+
