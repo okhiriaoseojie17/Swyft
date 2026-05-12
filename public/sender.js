@@ -121,26 +121,51 @@ function updateSendButtonState() {
 // ==========================
 async function zipFolder(files) {
   showStatus('Zipping files...', 'info');
- 
-  const zip = new JSZip();
- 
-  for (const file of files) {
-    const path = file.webkitRelativePath || file.name;
-    zip.file(path, file);
+
+  // Disable file inputs while zipping so the user can't trigger
+  // a second zip that would race with this one
+  const fileInput   = document.getElementById('fileInput');
+  const folderInput = document.getElementById('folderInput');
+  if (fileInput)   fileInput.disabled   = true;
+  if (folderInput) folderInput.disabled = true;
+
+  try {
+    const zip = new JSZip();
+
+    for (const file of files) {
+      const path = file.webkitRelativePath || file.name;
+      zip.file(path, file);
+    }
+
+    const zipBlob = await zip.generateAsync(
+      { type: 'blob' },
+      (meta) => {
+        // Show compression progress for large batches
+        if (meta.percent < 100) {
+          showStatus(`Zipping… ${Math.round(meta.percent)}%`, 'info');
+        }
+      }
+    );
+
+    const zipFile = new File(
+      [zipBlob],
+      'archive.zip',
+      { type: 'application/zip' }
+    );
+
+    selectedFile = zipFile;
+    updateFileInfo([zipFile]);
+    showStatus('ZIP ready to send', 'success');
+
+    // Call AFTER selectedFile is set so the button check is accurate
+    updateSendButtonState();
+  } catch (err) {
+    showStatus('Error creating ZIP: ' + err.message, 'error');
+  } finally {
+    // Always re-enable inputs
+    if (fileInput)   fileInput.disabled   = false;
+    if (folderInput) folderInput.disabled = false;
   }
- 
-  const zipBlob = await zip.generateAsync({ type: 'blob' });
- 
-  const zipFile = new File(
-    [zipBlob],
-    'archive.zip',
-    { type: 'application/zip' }
-  );
- 
-  selectedFile = zipFile;
-  updateFileInfo([zipFile]);
-  updateSendButtonState();
-  showStatus('ZIP ready to send', 'success');
 }
  
 // ==========================
@@ -262,8 +287,9 @@ function setupDataChannel() {
   dataChannel.onopen = () => {
     isConnected = true;
     showStatus('✓ Connected! Select a file to send.', 'success');
-    // FIX: Now that channel is open, re-check button state —
-    // selectedFile may already be set if user picked before connecting
+    // Channel just opened — update button. If zip is still running,
+    // selectedFile is null so button stays disabled (correct).
+    // zipFolder's own updateSendButtonState() fires when zip completes.
     updateSendButtonState();
   };
  
