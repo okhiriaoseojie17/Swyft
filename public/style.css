@@ -26,7 +26,7 @@
 /* ─── Body / Stage ───────────────────────────────── */
 body {
   font-family: 'DM Sans', sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #1f2747 0%, #2b1f3f 100%);
   min-height: 100vh;
   display: flex;
   justify-content: center;
@@ -41,8 +41,8 @@ body::before {
   position: fixed;
   inset: 0;
   background-image:
-    radial-gradient(circle at 20% 20%, rgba(255,255,255,0.06) 0%, transparent 55%),
-    radial-gradient(circle at 80% 80%, rgba(0,0,0,0.12) 0%, transparent 50%);
+    radial-gradient(circle at 20% 20%, rgba(102,126,234,0.08) 0%, transparent 55%),
+    radial-gradient(circle at 80% 80%, rgba(0,0,0,0.22) 0%, transparent 50%);
   pointer-events: none;
 }
 
@@ -145,13 +145,22 @@ body::before {
 .header {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
   margin-bottom: 28px;
+  width: 100%;
 }
 
-.logo-small { flex: 1; }
+.logo-small {
+  display: flex;
+  justify-content: flex-end;
+}
 .logo-small h2 { margin: 0; }
 .logo-small img { display: block; }
+.logo-small img {
+  display: block;
+  max-width: 160px;
+  height: auto;
+}
 
 .h1 {
   font-family: 'Syne', sans-serif;
