@@ -3,110 +3,102 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Swyft - Send Files</title>
+  <title>Swyft — Send Files</title>
   <link rel="stylesheet" href="style.css">
-
-<link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
-<link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
-<link rel="shortcut icon" href="favicon.ico?v=v1" />
-<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
-<meta name="apple-mobile-web-app-title" content="Swyft" />
-<link rel="manifest" href="site.webmanifest?v=v1" />
-
-
-  <style>
-    /* Step navigation styles (#10) */
-    .step-page {
-      transition: opacity 0.3s ease, transform 0.3s ease;
-    }
-    .step-hidden {
-      display: none !important;
-    }
-    .step-active {
-      display: block;
-      animation: stepFadeIn 0.35s ease;
-    }
-    @keyframes stepFadeIn {
-      from { opacity: 0; transform: translateY(14px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-  </style>
+  <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
+  <link rel="shortcut icon" href="favicon.ico?v=v1" />
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
+  <meta name="apple-mobile-web-app-title" content="Swyft" />
+  <link rel="manifest" href="site.webmanifest?v=v1" />
 </head>
 <body>
   <div class="container">
+
+    <!-- Header -->
     <div class="header">
       <button class="back-btn" onclick="goBack()">← Back</button>
       <div class="logo-small">
-        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft" width="200" height="100"></h2>
+        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft" width="160" height="80"></h2>
       </div>
     </div>
 
-    <h1 class="h1">Sender</h1>
+    <h1 class="h1">Send a File</h1>
 
-    <!-- ═══════════════════════════════════════
-         STEP 1 — Generate PIN
-    ════════════════════════════════════════ -->
+    <!-- ══════════════════════════════════════════
+         PAGE 1 — Connection
+    ══════════════════════════════════════════ -->
     <div id="step-pin" class="step-page step-active">
+
+      <!-- Step 1a: Generate PIN -->
       <div class="step">
-        <h3><span class="step-number">1</span> Generate PIN Code</h3>
-        <div class="instruction">Generate a 6-digit PIN, then share it with the receiver</div>
+        <h3><span class="step-number">1</span> Generate a PIN code</h3>
+        <div class="instruction">Create a one-time PIN and share it with the receiver so they can connect.</div>
         <button onclick="generatePIN()">Generate PIN</button>
       </div>
+
     </div>
 
-    <!-- ═══════════════════════════════════════
-         STEP 2 — Show PIN + Wait for receiver
-    ════════════════════════════════════════ -->
+    <!-- ══════════════════════════════════════════
+         PAGE 1b — Show PIN + Waiting
+    ══════════════════════════════════════════ -->
     <div id="step-waiting" class="step-page step-hidden">
+
       <div class="step">
-        <h3><span class="step-number">1</span> Share This PIN</h3>
+        <h3><span class="step-number">1</span> Share this PIN</h3>
         <div id="pinDisplay" class="pin-display">
           <div class="pin-code" id="pinCode">------</div>
-          <p class="pin-instruction">Share this PIN with the receiver</p>
+          <p class="pin-instruction">Share this code with the receiver</p>
           <button class="copy-btn" onclick="copyPIN()">📋 Copy PIN</button>
         </div>
       </div>
 
       <div class="step">
-        <h3><span class="step-number">2</span> Waiting for Receiver…</h3>
-        <div class="instruction">Ask the receiver to enter the PIN on their device</div>
+        <h3><span class="step-number">2</span> Waiting for receiver…</h3>
+        <div class="instruction">Ask the receiver to open Swyft and enter the PIN above.</div>
         <div id="connectionStatus" class="connection-status">
           <div class="spinner"></div>
           <p id="statusText">Waiting for receiver to connect…</p>
         </div>
       </div>
+
     </div>
 
-    <!-- ═══════════════════════════════════════
-         STEP 3 — Select file & send
-    ════════════════════════════════════════ -->
+    <!-- ══════════════════════════════════════════
+         PAGE 2 — Select & Send File
+    ══════════════════════════════════════════ -->
     <div id="step-transfer" class="step-page step-hidden">
+
       <div class="step">
-        <h3><span class="step-number">3</span> Select and Send File</h3>
-
-        <div class="connection-status" style="padding:15px; margin-bottom:16px;">
+        <h3><span class="step-number">1</span> Connected</h3>
+        <div class="connection-status" style="padding:18px;">
           <div class="checkmark">✓</div>
-          <p>Receiver connected — ready to send</p>
+          <p style="color:rgba(52,211,153,0.9); font-weight:500;">Receiver is ready</p>
         </div>
+      </div>
 
-        <input type="file"  id="fileInput"   multiple           onchange="handleFileSelect(false)" style="display:none;">
-        <input type="file"  id="folderInput" webkitdirectory   onchange="handleFileSelect(true)"  style="display:none;">
+      <div class="step">
+        <h3><span class="step-number">2</span> Select a file to send</h3>
 
-        <div class="file-buttons" style="display:flex; gap:10px; margin-bottom:12px;">
-          <button onclick="document.getElementById('fileInput').click()"  style="flex:1;">📄 Select File(s)</button>
-          <button onclick="document.getElementById('folderInput').click()" style="flex:1;">📁 Select Folder</button>
+        <input type="file"  id="fileInput"   multiple          onchange="handleFileSelect(false)" style="display:none;">
+        <input type="file"  id="folderInput" webkitdirectory  onchange="handleFileSelect(true)"  style="display:none;">
+
+        <div class="file-buttons">
+          <button onclick="document.getElementById('fileInput').click()">📄 File(s)</button>
+          <button onclick="document.getElementById('folderInput').click()">📁 Folder</button>
         </div>
 
         <label class="file-label">
-          📁 Drag files or folders here, or click to select
+          Drag files or folders here, or click a button above
         </label>
 
         <div id="fileInfo" class="file-info"></div>
       </div>
 
-      <button id="sendBtn"   onclick="sendFile()"      disabled>Send File</button>
-      <button id="pauseBtn"  onclick="togglePause()"   style="display:none; background:#ff9800; margin-top:10px;">⏸️ Pause</button>
-      <button id="cancelBtn" onclick="cancelTransfer()" style="display:none; background:#f44336; margin-top:10px;">❌ Cancel</button>
+      <button id="sendBtn" onclick="sendFile()" disabled>Send File →</button>
+
+      <button id="pauseBtn"  onclick="togglePause()"    style="display:none;">⏸ Pause</button>
+      <button id="cancelBtn" onclick="cancelTransfer()"  style="display:none;">✕ Cancel Transfer</button>
 
       <div id="sendProgress" class="progress-container">
         <div class="progress-bar">
@@ -114,12 +106,11 @@
         </div>
         <div id="sendStatus" class="transfer-status"></div>
       </div>
-    </div>
 
-   <button id="endConnectionBtn" onclick="endConnection()" 
-        style="background:#6c757d; margin-top:10px;">
-  🔌 End Connection
-</button>
+      <div class="divider"></div>
+      <button id="endConnectionBtn" onclick="endConnection()">🔌 End Connection</button>
+
+    </div>
 
     <div id="senderStatus" class="status"></div>
   </div>
