@@ -27,87 +27,42 @@ app.use((req, res, next) => {
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ICE servers endpoint — tries Metered first, falls back to Xirsys if Metered fails/empty.
-// All credentials are read from Render environment variables — never hardcoded.
+// ICE servers endpoint
 app.get('/ice-servers', async (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  const meteredApiKey  = process.env.METERED_API_KEY;
-  const meteredAppName = process.env.METERED_APP_NAME;
-  const xirsysIdent    = process.env.XIRSYS_IDENT;
-  const xirsysSecret   = process.env.XIRSYS_SECRET;
-  const xirsysChannel  = process.env.XIRSYS_CHANNEL;
-
-  const stun = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+  const iceServers = [
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80',                    username: process.env.METERED_USERNAME, credential: process.env.METERED_CREDENTIAL },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp',      username: process.env.METERED_USERNAME, credential: process.env.METERED_CREDENTIAL },
+    { urls: 'turn:global.relay.metered.ca:443',                   username: process.env.METERED_USERNAME, credential: process.env.METERED_CREDENTIAL },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp',    username: process.env.METERED_USERNAME, credential: process.env.METERED_CREDENTIAL },
   ];
 
-  // Helper: fetch from Metered
-  async function fetchMetered() {
-    if (!meteredApiKey || !meteredAppName) {
-      console.log('Metered: skipped (no credentials)');
-      return null;
-    }
-    try {
-      const url = `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`;
-      console.log('Metered: fetching...');
-      const r = await fetch(url);
-      console.log('Metered: status:', r.status);
-      const servers = await r.json();
-      console.log('Metered: response:', JSON.stringify(servers).slice(0, 200));
-      if (Array.isArray(servers) && servers.length > 0) {
-        console.log('✅ Using Metered TURN servers:', servers.length);
-        return servers;
-      }
-      console.log('Metered: returned empty array');
-      return null;
-    } catch (e) {
-      console.error('Metered FULL ERROR:', e);
-      return null;
-    }
-  }
+  // Add Xirsys as extra TURN servers if configured
+  const xirsysIdent   = process.env.XIRSYS_IDENT;
+  const xirsysSecret  = process.env.XIRSYS_SECRET;
+  const xirsysChannel = process.env.XIRSYS_CHANNEL;
 
-  // Helper: fetch from Xirsys
-  async function fetchXirsys() {
-    if (!xirsysIdent || !xirsysSecret || !xirsysChannel) {
-      console.log('Xirsys: skipped (no credentials)');
-      return null;
-    }
+  if (xirsysIdent && xirsysSecret && xirsysChannel) {
     try {
-      const url = `https://global.xirsys.net/_turn/${xirsysChannel}`;
-      console.log('Xirsys: fetching channel:', xirsysChannel);
       const auth = Buffer.from(`${xirsysIdent}:${xirsysSecret}`).toString('base64');
-      const r = await fetch(url, {
+      const r = await fetch(`https://global.xirsys.net/_turn/${xirsysChannel}`, {
         method: 'PUT',
         headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ format: 'urls' })
       });
-      const text = await r.text();
-      console.log('Xirsys: raw response:', text.slice(0, 200));
-      const data = JSON.parse(text);
-      const servers = data.v?.iceServers;
-      if (Array.isArray(servers) && servers.length > 0) {
-        console.log('✅ Using Xirsys TURN servers:', servers.length);
-        return servers;
+      const data = await r.json();
+      const xirsysServers = data.v?.iceServers;
+      if (Array.isArray(xirsysServers) && xirsysServers.length > 0) {
+        iceServers.push(...xirsysServers);
+        console.log('✅ Xirsys servers added:', xirsysServers.length);
       }
-      console.log('Xirsys: returned empty or invalid:', text.slice(0, 100));
-      return null;
     } catch (e) {
-      console.warn('Xirsys failed:', e.message);
-      return null;
+      console.warn('Xirsys fetch failed:', e.message);
     }
   }
 
-  try {
-    // Try Metered first, then Xirsys, then STUN-only
-    const turnServers = (await fetchMetered()) || (await fetchXirsys()) || [];
-    const iceServers = [...stun, ...turnServers];
-    console.log(`Serving ${iceServers.length} ICE servers (${turnServers.length} TURN)`);
-    res.json(iceServers);
-  } catch (err) {
-    console.error('ICE endpoint error:', err.message);
-    res.json(stun);
-  }
+  console.log(`Serving ${iceServers.length} ICE servers`);
+  res.json(iceServers);
 });
 
 
@@ -215,8 +170,8 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`🚀 Swyft Server running on http://localhost:${PORT}`);
-  console.log('ENV CHECK → METERED_APP_NAME:', process.env.METERED_APP_NAME || 'NOT SET');
-  console.log('ENV CHECK → METERED_API_KEY:', process.env.METERED_API_KEY ? '✅ set' : 'NOT SET');
+  console.log('ENV CHECK → METERED_USERNAME:', process.env.METERED_USERNAME || 'NOT SET');
+  console.log('ENV CHECK → METERED_CREDENTIAL:', process.env.METERED_CREDENTIAL ? '✅ set' : 'NOT SET');
   console.log('ENV CHECK → XIRSYS_IDENT:', process.env.XIRSYS_IDENT || 'NOT SET');
   console.log('ENV CHECK → XIRSYS_SECRET:', process.env.XIRSYS_SECRET ? '✅ set' : 'NOT SET');
   console.log('ENV CHECK → XIRSYS_CHANNEL:', process.env.XIRSYS_CHANNEL || 'NOT SET');
