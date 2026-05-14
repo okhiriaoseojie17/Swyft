@@ -264,7 +264,7 @@ async function generatePIN() {
 
       showStep('step-waiting');
 
-      socket.on('answer-ready', (data) => {
+      socket.once('answer-ready', (data) => {
         if (data.pin === currentPIN) {
           applyAnswerFromServer(data.answer);
         }
@@ -474,14 +474,21 @@ function sendFile() {
  
 async function applyAnswerFromServer(answer) {
   try {
+    // Guard: only apply the answer when we're actually expecting one.
+    // Stale or duplicate socket events can fire after state is already
+    // 'stable', which throws the "Called in wrong state" DOMException.
+    if (!pc || pc.signalingState !== 'have-local-offer') {
+      console.warn('applyAnswerFromServer: skipping, signalingState is', pc?.signalingState);
+      return;
+    }
+
     await pc.setRemoteDescription(answer);
     isConnected = true;
  
     showStep('step-transfer');
     showStatus('✓ Connected! Select a file to send.', 'success');
-    // FIX: dataChannel.onopen fires after ICE + DTLS complete, which happens
-    // after setRemoteDescription. Don't call updateSendButtonState() here
-    // because the channel isn't open yet — onopen will call it when ready.
+    // dataChannel.onopen fires after ICE + DTLS complete (after setRemoteDescription).
+    // Don't call updateSendButtonState() here; onopen handles it when the channel is ready.
  
   } catch (err) {
     isTransferring = false;
