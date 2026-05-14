@@ -121,51 +121,26 @@ function updateSendButtonState() {
 // ==========================
 async function zipFolder(files) {
   showStatus('Zipping files...', 'info');
-
-  // Disable file inputs while zipping so the user can't trigger
-  // a second zip that would race with this one
-  const fileInput   = document.getElementById('fileInput');
-  const folderInput = document.getElementById('folderInput');
-  if (fileInput)   fileInput.disabled   = true;
-  if (folderInput) folderInput.disabled = true;
-
-  try {
-    const zip = new JSZip();
-
-    for (const file of files) {
-      const path = file.webkitRelativePath || file.name;
-      zip.file(path, file);
-    }
-
-    const zipBlob = await zip.generateAsync(
-      { type: 'blob' },
-      (meta) => {
-        // Show compression progress for large batches
-        if (meta.percent < 100) {
-          showStatus(`Zipping… ${Math.round(meta.percent)}%`, 'info');
-        }
-      }
-    );
-
-    const zipFile = new File(
-      [zipBlob],
-      'archive.zip',
-      { type: 'application/zip' }
-    );
-
-    selectedFile = zipFile;
-    updateFileInfo([zipFile]);
-    showStatus('ZIP ready to send', 'success');
-
-    // Call AFTER selectedFile is set so the button check is accurate
-    updateSendButtonState();
-  } catch (err) {
-    showStatus('Error creating ZIP: ' + err.message, 'error');
-  } finally {
-    // Always re-enable inputs
-    if (fileInput)   fileInput.disabled   = false;
-    if (folderInput) folderInput.disabled = false;
+ 
+  const zip = new JSZip();
+ 
+  for (const file of files) {
+    const path = file.webkitRelativePath || file.name;
+    zip.file(path, file);
   }
+ 
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+ 
+  const zipFile = new File(
+    [zipBlob],
+    'archive.zip',
+    { type: 'application/zip' }
+  );
+ 
+  selectedFile = zipFile;
+  updateFileInfo([zipFile]);
+  updateSendButtonState();
+  showStatus('ZIP ready to send', 'success');
 }
  
 // ==========================
@@ -264,7 +239,7 @@ async function generatePIN() {
 
       showStep('step-waiting');
 
-      socket.once('answer-ready', (data) => {
+      socket.on('answer-ready', (data) => {
         if (data.pin === currentPIN) {
           applyAnswerFromServer(data.answer);
         }
@@ -286,10 +261,21 @@ function setupDataChannel() {
  
   dataChannel.onopen = () => {
     isConnected = true;
+
+    // Clear any file left over from a previous connection
+    selectedFile = null;
+    document.getElementById('fileInput').value = '';
+    document.getElementById('folderInput').value = '';
+    const fileInfo = document.getElementById('fileInfo');
+    if (fileInfo) { fileInfo.classList.remove('show'); fileInfo.innerHTML = ''; }
+    const progressFill = document.getElementById('sendProgressFill');
+    const progressWrap = document.getElementById('sendProgress');
+    const statusEl     = document.getElementById('sendStatus');
+    if (progressFill) { progressFill.style.width = '0%'; progressFill.textContent = '0%'; }
+    if (progressWrap) progressWrap.classList.remove('show');
+    if (statusEl) statusEl.textContent = '';
+
     showStatus('✓ Connected! Select a file to send.', 'success');
-    // Channel just opened — update button. If zip is still running,
-    // selectedFile is null so button stays disabled (correct).
-    // zipFolder's own updateSendButtonState() fires when zip completes.
     updateSendButtonState();
   };
  
@@ -474,21 +460,14 @@ function sendFile() {
  
 async function applyAnswerFromServer(answer) {
   try {
-    // Guard: only apply the answer when we're actually expecting one.
-    // Stale or duplicate socket events can fire after state is already
-    // 'stable', which throws the "Called in wrong state" DOMException.
-    if (!pc || pc.signalingState !== 'have-local-offer') {
-      console.warn('applyAnswerFromServer: skipping, signalingState is', pc?.signalingState);
-      return;
-    }
-
     await pc.setRemoteDescription(answer);
     isConnected = true;
  
     showStep('step-transfer');
     showStatus('✓ Connected! Select a file to send.', 'success');
-    // dataChannel.onopen fires after ICE + DTLS complete (after setRemoteDescription).
-    // Don't call updateSendButtonState() here; onopen handles it when the channel is ready.
+    // FIX: dataChannel.onopen fires after ICE + DTLS complete, which happens
+    // after setRemoteDescription. Don't call updateSendButtonState() here
+    // because the channel isn't open yet — onopen will call it when ready.
  
   } catch (err) {
     isTransferring = false;
