@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Swyft — Local Transfer</title>
+
+  <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
+<link rel="shortcut icon" href="favicon.ico?v=v1" />
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
+<meta name="apple-mobile-web-app-title" content="Swyft" />
+<link rel="manifest" href="site.webmanifest?v=v1" />
+
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --green: #10b981;
+      --green-dim: rgba(16,185,129,0.15);
+      --green-glow: rgba(16,185,129,0.07);
+      --red: #ef4444;
+      --red-dim: rgba(239,68,68,0.12);
+      --surface: #141414;
+      --border: #1f1f1f;
+      --text-muted: #555;
+      --text-faint: #333;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .header-logo {
+  height: 34px;
+  width: auto;
+  object-fit: contain;
+  margin-bottom: 2px;
+}
+
+    .back-btn {
+      background: var(--surface);
+      border: 1px solid #2a2a2a;
+      color: #777;
+      font-size: 13px;
+      padding: 7px 13px;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: color .2s, border-color .2s;
+    }
+    .back-btn:hover { color: #fff; border-color: #3a3a3a; }
+
+    .header-center { text-align: center; }
+    .header-title { font-size: 16px; font-weight: 700; letter-spacing: -.3px; }
+    .header-sub { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+    .badge {
+      font-size: 10px; font-weight: 700; padding: 4px 10px;
+      border-radius: 20px; letter-spacing: .5px; text-transform: uppercase;
+      background: var(--green-dim); color: var(--green);
+    }
+
+    /* ── Layout ─────────────────────────────────────────────── */
+    .body { flex: 1; overflow-y: auto; padding: 16px 20px 100px; display: flex; flex-direction: column; gap: 18px; }
+
+    /* ── Device name banner ─────────────────────────────────── */
+    .my-device-bar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .my-device-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .my-device-name { font-weight: 600; color: #ccc; }
+    .my-device-label { color: var(--text-muted); font-size: 11px; margin-left: auto; }
+
+    /* ── Section headers ─────────────────────────────────────── */
+    .section-title {
+      font-size: 11px; font-weight: 700; color: var(--text-faint);
+      text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;
+    }
+
+    /* ── Peers list ─────────────────────────────────────────── */
+    .peers-wrap { display: flex; flex-direction: column; gap: 0; }
+    .peers-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .peer-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+      overflow: hidden;
+    }
+    .peer-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: var(--green-glow);
+      opacity: 0; transition: opacity .25s;
+    }
+    .peer-card:hover { border-color: #2e2e2e; background: #181818; }
+    .peer-card:hover::before { opacity: 1; }
+    .peer-card:active { transform: scale(.99); }
+    .peer-card.sending { opacity: .5; pointer-events: none; }
+
+    .peer-avatar {
+      width: 42px; height: 42px; border-radius: 11px;
+      background: var(--green-dim);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+    }
+    .peer-info { flex: 1; min-width: 0; }
+    .peer-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .peer-sub  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .peer-arrow { color: #2a2a2a; font-size: 18px; flex-shrink: 0; }
+
+    .empty-peers {
+      background: var(--surface);
+      border: 1px dashed #1e1e1e;
+      border-radius: 12px;
+      padding: 28px 20px;
+      text-align: center;
+    }
+    .empty-peers-icon { font-size: 32px; margin-bottom: 10px; }
+    .empty-peers-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+    .empty-peers-desc { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+
+    .scan-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px;
+    }
+    .scan-spinner {
+      width: 14px; height: 14px; border: 2px solid #1a1a1a;
+      border-top-color: var(--green); border-radius: 50%;
+      animation: spin .7s linear infinite; flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .scan-text { font-size: 11px; color: var(--text-muted); }
+    .scan-count { font-size: 11px; color: var(--green); margin-left: auto; }
+
+    /* ── File picker ─────────────────────────────────────────── */
+    .file-section { display: flex; flex-direction: column; gap: 8px; }
+
+    .file-pick-row { display: flex; gap: 8px; }
+    .pick-btn {
+      flex: 1; padding: 12px 10px; border-radius: 10px;
+      border: 1px solid #252525; background: var(--surface);
+      color: #888; font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: border-color .2s, color .2s, background .2s;
+    }
+    .pick-btn:hover { border-color: #333; color: #bbb; background: #181818; }
+    input[type="file"] { display: none; }
+
+    .drop-zone {
+      border: 1.5px dashed #252525;
+      border-radius: 10px; padding: 18px;
+      text-align: center; font-size: 12px; color: var(--text-muted);
+      cursor: pointer; transition: border-color .2s, background .2s;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--green); background: var(--green-dim); color: #888; }
+
+    .file-info {
+      background: #0f0f0f; border: 1px solid var(--border);
+      border-radius: 10px; padding: 11px 14px;
+      font-size: 12px; color: #888; display: none;
+    }
+    .file-info.show { display: block; }
+    .file-info strong { color: #ccc; font-size: 13px; }
+
+    .hint-text {
+      font-size: 12px; color: var(--text-muted); text-align: center; line-height: 1.5;
+    }
+    .hint-text span { color: var(--green); }
+
+    /* ── Hotspot card ─────────────────────────────────────────── */
+    .hotspot-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .hotspot-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .hotspot-icon {
+      width: 36px; height: 36px; border-radius: 9px;
+      background: rgba(245,158,11,.12);
+      display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;
+    }
+    .hotspot-title { font-size: 14px; font-weight: 600; }
+    .hotspot-desc { font-size: 12px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px; }
+    .hotspot-creds {
+      background: #0f0f0f; border: 1px solid var(--border); border-radius: 9px;
+      padding: 10px 13px; margin-bottom: 10px; display: none;
+    }
+    .hotspot-creds.show { display: block; }
+    .cred-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 12px; }
+    .cred-row:last-child { margin-bottom: 0; }
+    .cred-label { color: #444; }
+    .cred-value { font-family: monospace; color: #bbb; font-weight: 600; }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      width: 100%; padding: 12px; border-radius: 10px; border: none;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: opacity .2s, transform .15s; letter-spacing: -.1px;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
+    .btn-green { background: var(--green); color: #fff; }
+    .btn-green:hover:not(:disabled) { opacity: .85; }
+    .btn-red { background: var(--red-dim); border: 1px solid rgba(239,68,68,.25); color: #f87171; }
+    .btn-red:hover { background: rgba(239,68,68,.2); }
+    .btn-outline { background: transparent; border: 1px solid #2a2a2a; color: #666; }
+    .btn-outline:hover { border-color: #333; color: #aaa; }
+
+    /* ── Status bar (bottom) ─────────────────────────────────── */
+    .status-bar { padding: 0 20px 20px; flex-shrink: 0; }
+    .status { font-size: 13px; padding: 11px 15px; border-radius: 10px; display: none; }
+    .status.show { display: block; }
+    .status.success { background: rgba(16,185,129,.1); color: #34d399; border: 1px solid rgba(16,185,129,.2); }
+    .status.error   { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.2); }
+    .status.info    { background: rgba(255,255,255,.04); color: #666; border: 1px solid #1e1e1e; }
+
+    /* ── Incoming request overlay ─────────────────────────────── */
+    .overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.85);
+      display: flex; align-items: flex-end;
+      z-index: 1000;
+      opacity: 0; pointer-events: none;
+      transition: opacity .25s;
+    }
+    .overlay.visible { opacity: 1; pointer-events: all; }
+
+    .request-sheet {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 20px 20px 0 0;
+      padding: 28px 24px 36px;
+      width: 100%;
+      transform: translateY(40px);
+      transition: transform .3s cubic-bezier(.2,.8,.3,1);
+    }
+    .overlay.visible .request-sheet { transform: translateY(0); }
+
+    .sheet-handle { width: 36px; height: 4px; background: #2e2e2e; border-radius: 99px; margin: 0 auto 22px; }
+    .sheet-icon { font-size: 38px; text-align: center; margin-bottom: 14px; }
+    .sheet-title { font-size: 19px; font-weight: 700; text-align: center; margin-bottom: 6px; }
+    .sheet-from { font-size: 14px; color: var(--green); text-align: center; margin-bottom: 16px; font-weight: 500; }
+    .sheet-file {
+      background: #0f0f0f; border: 1px solid #222; border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 22px; text-align: center;
+    }
+    .sheet-file-name { font-size: 14px; font-weight: 600; color: #ddd; word-break: break-all; }
+    .sheet-file-size { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+    .sheet-btns { display: flex; gap: 10px; }
+    .sheet-btns .btn { flex: 1; }
+
+    /* ── Progress sheet ────────────────────────────────────────── */
+    .progress-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.7);
+      display: flex; align-items: flex-end;
+      z-index: 900;
+      opacity: 0; pointer-events: none;
+      transition: opacity .2s;
+    }
+    .progress-overlay.visible { opacity: 1; pointer-events: all; }
+
+    .progress-sheet {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 20px 20px 0 0;
+      padding: 24px 24px 36px;
+      width: 100%;
+      transform: translateY(40px);
+      transition: transform .3s cubic-bezier(.2,.8,.3,1);
+    }
+    .progress-overlay.visible .progress-sheet { transform: translateY(0); }
+
+    .prog-handle { width: 36px; height: 4px; background: #2e2e2e; border-radius: 99px; margin: 0 auto 20px; }
+    .prog-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .prog-file  { font-size: 12px; color: var(--text-muted); margin-bottom: 18px; word-break: break-all; }
+
+    .prog-track { height: 7px; background: #1a1a1a; border-radius: 99px; overflow: hidden; margin-bottom: 8px; }
+    .prog-fill {
+      height: 100%; background: var(--green); border-radius: 99px;
+      width: 0%; transition: width .2s; position: relative;
+    }
+    .prog-fill::after {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.15), transparent);
+      animation: shimmer 1.5s infinite;
+    }
+    @keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+    .prog-stats { font-size: 11px; color: #444; text-align: center; margin-bottom: 16px; }
+
+    /* Download button inside progress sheet */
+    .dl-btn {
+      display: block; width: 100%; padding: 13px;
+      background: var(--green); color: #fff;
+      border-radius: 10px; border: none;
+      font-size: 14px; font-weight: 600; text-align: center;
+      text-decoration: none; cursor: pointer; transition: opacity .2s;
+      margin-bottom: 8px;
+    }
+    .dl-btn:hover { opacity: .85; }
+    .extracted-list {
+      background: #0f0f0f; border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 14px; margin-top: 8px;
+    }
+    .extracted-list h4 { font-size: 11px; color: #333; text-transform: uppercase; letter-spacing: .8px; margin-bottom: 8px; }
+    .file-row { margin-bottom: 6px; }
+    .file-link { font-size: 12px; color: var(--green); text-decoration: none; }
+    .file-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <div class="header">
+    <button class="back-btn" onclick="goBack()">← Back</button>
+    <div class="header-center">
+  <img src="Swyft_full_logo_colured.png" alt="Swyft" class="header-logo">
+  <div class="header-sub" id="connStatus">Connecting…</div>
+</div>
+    <span class="badge">📡 LAN</span>
+  </div>
+
+  <!-- ── Body ────────────────────────────────────────────────── -->
+  <div class="body">
+
+    <!-- My device name -->
+    <div class="my-device-bar">
+      <div class="my-device-dot"></div>
+      <span class="my-device-name" id="myDeviceName">This Device</span>
+      <span class="my-device-label">visible on network</span>
+    </div>
+
+    <!-- Nearby peers -->
+    <div class="peers-wrap">
+      <div class="section-title">Nearby Devices</div>
+      <div class="scan-row">
+        <div class="scan-spinner"></div>
+        <span class="scan-text">Listening for devices…</span>
+        <span class="scan-count" id="peerCount">0 online</span>
+      </div>
+      <div class="peers-list" id="peerList">
+        <div class="empty-peers" id="emptyPeers">
+          <div class="empty-peers-icon">📡</div>
+          <div class="empty-peers-title">No devices yet</div>
+          <div class="empty-peers-desc">Other devices with Swyft open on the same WiFi will appear here automatically.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- File picker -->
+    <div class="file-section">
+      <div class="section-title">File to Send</div>
+      <div class="file-pick-row">
+        <button class="pick-btn" onclick="document.getElementById('fileInput').click()">📄 File(s)</button>
+        <button class="pick-btn" onclick="document.getElementById('folderInput').click()">📁 Folder</button>
+      </div>
+      <input type="file" id="fileInput" multiple onchange="handleFileSelect(false)" />
+      <input type="file" id="folderInput" webkitdirectory onchange="handleFileSelect(true)" />
+      <div class="drop-zone" id="dropZone">Drop files or a folder here</div>
+      <div class="file-info" id="fileInfo"></div>
+      <p class="hint-text" id="sendHint">
+        Select a file, then <span>tap a device above</span> to send
+      </p>
+    </div>
+
+    <!-- Hotspot -->
+    <div>
+      <div class="section-title">No Shared Network?</div>
+      <div class="hotspot-card">
+        <div class="hotspot-header">
+          <div class="hotspot-icon">📶</div>
+          <div class="hotspot-title">Create a Hotspot</div>
+        </div>
+        <p class="hotspot-desc">
+          Start a WiFi hotspot on this device so another device can connect directly 
+          <br><br><strong style="color:#ccc">Windows only.</strong> On other platforms use your system hotspot settings, then open Swyft.
+        </p>
+        <div class="hotspot-creds" id="hotspotCreds">
+          <div class="cred-row"><span class="cred-label">Network</span><span class="cred-value">SwyftLocal</span></div>
+          <div class="cred-row"><span class="cred-label">Password</span><span class="cred-value">swyft1234</span></div>
+          <div class="cred-row"><span class="cred-label">This device IP</span><span class="cred-value">192.168.137.1</span></div>
+        </div>
+        <button class="btn btn-green" id="hotspotBtn" onclick="toggleHotspot()">📶 Start Hotspot</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Status bar ───────────────────────────────────────────── -->
+  <div class="status-bar">
+    <div class="status" id="pageStatus"></div>
+  </div>
+
+  <!-- ── Incoming request overlay (bottom sheet) ─────────────── -->
+  <div class="overlay" id="requestOverlay">
+    <div class="request-sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-icon">📥</div>
+      <div class="sheet-title">Incoming File</div>
+      <div class="sheet-from" id="sheetFrom">from Unknown</div>
+      <div class="sheet-file">
+        <div class="sheet-file-name" id="sheetFileName">—</div>
+        <div class="sheet-file-size" id="sheetFileSize">—</div>
+      </div>
+      <div class="sheet-btns">
+        <button class="btn btn-red"   onclick="respondToRequest(false)">✕ Decline</button>
+        <button class="btn btn-green" onclick="respondToRequest(true)">✓ Accept</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Transfer progress overlay ──────────────────────────── -->
+  <div class="progress-overlay" id="progressOverlay">
+    <div class="progress-sheet">
+      <div class="prog-handle"></div>
+      <div class="prog-title" id="progTitle">Sending…</div>
+      <div class="prog-file"  id="progFile"></div>
+      <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+      <div class="prog-stats" id="progStats">Starting…</div>
+      <div id="progActions"></div>
+      <button class="btn btn-outline" id="progCancelBtn" onclick="cancelTransfer()" style="margin-top:10px">✕ Cancel</button>
+      <button class="btn btn-outline" id="progCloseBtn"  onclick="closeProgress()"  style="margin-top:8px; display:none">Close</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script>
+  // ════════════════════════════════════════════════════════════════
+  // Configuration
+  // ════════════════════════════════════════════════════════════════
+  const SERVER_URL  = localStorage.getItem('swyftLocalServer') || 'http://localhost:3001';
+  const MY_NAME     = getDeviceName();
+
+  function getDeviceName() {
+    let n = localStorage.getItem('swyftDeviceName');
+    if (!n) {
+      // Auto-generate a friendly name
+      const adj  = ['Swift','Bright','Cool','Fast','Sharp'];
+      const noun = ['Falcon','Tiger','Panda','Eagle','Fox'];
+      n = adj[Math.floor(Math.random()*adj.length)] + ' ' + noun[Math.floor(Math.random()*noun.length)];
+      localStorage.setItem('swyftDeviceName', n);
+    }
+    return n;
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Socket
+  // ════════════════════════════════════════════════════════════════
+  const socket = io(SERVER_URL, { reconnection: true });
+
+  socket.on('connect', () => {
+    setConnStatus('Online', true);
+    // Announce ourselves to the server
+    socket.emit('announce', { name: MY_NAME }, ({ id }) => {
+      console.log('Announced as', MY_NAME, '— id:', id);
+    });
+  });
+  socket.on('disconnect', () => setConnStatus('Disconnected', false));
+  socket.on('connect_error', () => setConnStatus('Cannot reach local server', false));
+
+  // ════════════════════════════════════════════════════════════════
+  // State
+  // ════════════════════════════════════════════════════════════════
+  let selectedFile     = null;
+  let currentTransferId = null;
+  let pendingRequest    = null;   // { transferId, fromId }
+  let isTransferring   = false;
+  let isCancelled      = false;
+  let reader           = null;
+  let hotspotActive    = false;
+
+  // ════════════════════════════════════════════════════════════════
+  // UI helpers
+  // ════════════════════════════════════════════════════════════════
+  document.getElementById('myDeviceName').textContent = MY_NAME;
+
+  function setConnStatus(text, ok) {
+    const el = document.getElementById('connStatus');
+    el.textContent = text;
+    el.style.color = ok ? '#10b981' : '#f87171';
+  }
+
+  function showStatus(msg, type) {
+    const el = document.getElementById('pageStatus');
+    el.textContent = msg;
+    el.className = `status show ${type}`;
+    if (type !== 'error') setTimeout(() => el.classList.remove('show'), 4000);
+  }
+
+  function fmtSize(bytes) {
+    if (bytes > 1024**3) return (bytes/1024**3).toFixed(2)+' GB';
+    if (bytes > 1024**2) return (bytes/1024**2).toFixed(2)+' MB';
+    return (bytes/1024).toFixed(1)+' KB';
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Peer list
+  // ════════════════════════════════════════════════════════════════
+  socket.on('peer-list', (list) => {
+    // Exclude ourselves
+    const others = list.filter(p => p.id !== socket.id);
+    document.getElementById('peerCount').textContent = others.length + ' online';
+    renderPeers(others);
+  });
+
+  function renderPeers(peers) {
+    const container = document.getElementById('peerList');
+    const empty     = document.getElementById('emptyPeers');
+
+    if (peers.length === 0) {
+      container.innerHTML = '';
+      container.appendChild(empty);
+      return;
+    }
+
+    container.innerHTML = '';
+    for (const p of peers) {
+      const card = document.createElement('div');
+      card.className = 'peer-card';
+      card.dataset.id = p.id;
+      card.innerHTML = `
+        <div class="peer-avatar">💻</div>
+        <div class="peer-info">
+          <div class="peer-name">${escHtml(p.name)}</div>
+          <div class="peer-sub">Tap to send selected file</div>
+        </div>
+        <div class="peer-arrow">›</div>
+      `;
+      card.onclick = () => sendToPeer(p.id, p.name);
+      container.appendChild(card);
+    }
+  }
+
+  function escHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // ════════════════════════════════════════════════════════════════
+  // File selection
+  // ════════════════════════════════════════════════════════════════
+  function handleFileSelect(isFolder) {
+    const inp = document.getElementById(isFolder ? 'folderInput' : 'fileInput');
+    const files = Array.from(inp.files);
+    if (!files.length) return;
+    if (isFolder || files.length > 1) { zipFiles(files); return; }
+    selectedFile = files[0];
+    showFileInfo([selectedFile]);
+  }
+
+  // Drag & drop
+  const dz = document.getElementById('dropZone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', async e => {
+    e.preventDefault(); dz.classList.remove('drag-over');
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+    if (files.length > 1) { await zipFiles(files); return; }
+    selectedFile = files[0]; showFileInfo([selectedFile]);
+  });
+
+  async function zipFiles(files) {
+    showStatus('Zipping files…', 'info');
+    const zip = new JSZip();
+    for (const f of files) zip.file(f.webkitRelativePath || f.name, f);
+    const blob = await zip.generateAsync({ type: 'blob' });
+    selectedFile = new File([blob], 'archive.zip', { type: 'application/zip' });
+    showFileInfo([selectedFile]);
+    showStatus('✓ ZIP ready', 'success');
+  }
+
+  function showFileInfo(files) {
+    const el = document.getElementById('fileInfo');
+    if (files.length === 1) {
+      el.innerHTML = `<strong>${files[0].name}</strong><br>${fmtSize(files[0].size)}`;
+    } else {
+      const total = files.reduce((s,f)=>s+f.size,0);
+      el.innerHTML = `<strong>${files.length} files</strong><br>${fmtSize(total)} total`;
+    }
+    el.classList.add('show');
+    document.getElementById('sendHint').innerHTML =
+      'File ready — <span>tap a device above</span> to send';
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Send flow
+  // ════════════════════════════════════════════════════════════════
+  function sendToPeer(targetId, targetName) {
+    if (!selectedFile) {
+      showStatus('⚠️ Select a file first', 'error'); return;
+    }
+    if (isTransferring) {
+      showStatus('⚠️ A transfer is already in progress', 'error'); return;
+    }
+
+    const meta = { name: selectedFile.name, size: selectedFile.size, mimeType: selectedFile.type || 'application/octet-stream' };
+
+    showStatus(`Requesting ${targetName} to accept…`, 'info');
+
+    // Mark peer card as busy
+    const card = document.querySelector(`.peer-card[data-id="${targetId}"]`);
+    if (card) card.classList.add('sending');
+
+    socket.emit('request-transfer', { targetId, meta }, (res) => {
+      if (!res.success) {
+        showStatus('❌ ' + res.message, 'error');
+        if (card) card.classList.remove('sending');
+        return;
+      }
+      currentTransferId = res.transferId;
+      // Wait for response from receiver (handled in socket.on('transfer-response'))
+    });
+  }
+
+  socket.on('transfer-response', ({ transferId, accepted, reason }) => {
+    const card = document.querySelector('.peer-card.sending');
+    if (card) card.classList.remove('sending');
+
+    if (transferId !== currentTransferId) return;
+
+    if (!accepted) {
+      currentTransferId = null;
+      showStatus(reason === 'receiver-left' ? '❌ Device went offline' : '❌ Transfer declined', 'error');
+      return;
+    }
+
+    // Accepted — start sending
+    showStatus('✓ Accepted! Sending file…', 'success');
+    startSending(transferId, selectedFile);
+  });
+
+  function startSending(transferId, file) {
+    isTransferring = true;
+    isCancelled    = false;
+
+    const CHUNK     = 256 * 1024;
+    let offset      = 0;
+    const startTime = Date.now();
+
+    // Show progress sheet
+    openProgress('Sending', file.name);
+
+    // Send metadata
+    socket.emit('file-metadata', { transferId, metadata: { name: file.name, size: file.size, mimeType: file.type || 'application/octet-stream' } });
+
+    reader = new FileReader();
+
+    function sendNext() {
+      if (isCancelled) return;
+      if (offset >= file.size) {
+        socket.emit('file-end', { transferId });
+        isTransferring = false;
+        currentTransferId = null;
+        // Show success in progress sheet
+        document.getElementById('progTitle').textContent = '✓ Sent!';
+        document.getElementById('progStats').textContent = `${fmtSize(file.size)} transferred`;
+        document.getElementById('progCancelBtn').style.display = 'none';
+        document.getElementById('progCloseBtn').style.display = 'block';
+        showStatus('✓ File sent successfully!', 'success');
+        return;
+      }
+      reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK));
+    }
+
+    reader.onload = (e) => {
+      if (isCancelled) return;
+      const chunk = e.target.result;
+      socket.emit('file-chunk', { transferId, chunk });
+      offset += chunk.byteLength;
+
+      const pct = Math.round((offset / file.size) * 100);
+      document.getElementById('progFill').style.width = pct + '%';
+
+      const elapsed = (Date.now() - startTime) / 1000;
+      const speed   = elapsed > 0 ? (offset/1024/1024)/elapsed : 0;
+      document.getElementById('progStats').textContent =
+        `${fmtSize(offset)} / ${fmtSize(file.size)} @ ${speed.toFixed(2)} MB/s`;
+
+      setTimeout(sendNext, 0);
+    };
+
+    reader.onerror = () => {
+      isTransferring = false;
+      showStatus('❌ Error reading file', 'error');
+      closeProgress();
+    };
+
+    sendNext();
+  }
+
+  function cancelTransfer() {
+    if (!currentTransferId) { closeProgress(); return; }
+    if (!confirm('Cancel this transfer?')) return;
+    isCancelled = true;
+    isTransferring = false;
+    if (reader?.readyState === FileReader.LOADING) reader.abort();
+    socket.emit('file-cancel', { transferId: currentTransferId });
+    currentTransferId = null;
+    showStatus('Transfer cancelled', 'info');
+    closeProgress();
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Receive flow (incoming request from another peer)
+  // ════════════════════════════════════════════════════════════════
+  socket.on('incoming-request', ({ transferId, from, fromId, meta }) => {
+    pendingRequest = { transferId, fromId };
+
+    document.getElementById('sheetFrom').textContent = 'from ' + from;
+    document.getElementById('sheetFileName').textContent = meta.name;
+    document.getElementById('sheetFileSize').textContent = fmtSize(meta.size);
+
+    document.getElementById('requestOverlay').classList.add('visible');
+  });
+
+  function respondToRequest(accepted) {
+    document.getElementById('requestOverlay').classList.remove('visible');
+    if (!pendingRequest) return;
+
+    const { transferId } = pendingRequest;
+    socket.emit('transfer-response', { transferId, accepted });
+
+    if (!accepted) { pendingRequest = null; return; }
+
+    // Open receive progress sheet
+    openProgress('Receiving', document.getElementById('sheetFileName').textContent);
+
+    // Set up incoming data listeners
+    let fileMetadata  = null;
+    let receivedSize  = 0;
+    let startTime     = null;
+    let buffers       = [];
+
+    socket.off('file-metadata');
+    socket.on('file-metadata', ({ transferId: tid, metadata }) => {
+      if (tid !== transferId) return;
+      fileMetadata = metadata;
+      receivedSize = 0;
+      startTime    = Date.now();
+      buffers      = [];
+      document.getElementById('progFile').textContent = metadata.name;
+    });
+
+    socket.off('file-chunk');
+    socket.on('file-chunk', ({ transferId: tid, chunk }) => {
+      if (tid !== transferId) return;
+      buffers.push(chunk);
+      receivedSize += chunk.byteLength;
+
+      if (fileMetadata?.size > 0) {
+        const pct = Math.round((receivedSize / fileMetadata.size) * 100);
+        document.getElementById('progFill').style.width = pct + '%';
+        const elapsed = (Date.now() - startTime) / 1000;
+        const speed   = elapsed > 0 ? (receivedSize/1024/1024)/elapsed : 0;
+        document.getElementById('progStats').textContent =
+          `${fmtSize(receivedSize)} / ${fmtSize(fileMetadata.size)} @ ${speed.toFixed(2)} MB/s`;
+      }
+    });
+
+    socket.off('file-end');
+    socket.on('file-end', async ({ transferId: tid }) => {
+      if (tid !== transferId) return;
+      socket.off('file-metadata'); socket.off('file-chunk'); socket.off('file-end'); socket.off('file-cancel');
+
+      const blob = new Blob(buffers, { type: fileMetadata?.mimeType || 'application/octet-stream' });
+      buffers = [];
+
+      document.getElementById('progFill').style.width = '100%';
+      document.getElementById('progTitle').textContent = '✓ Received!';
+      document.getElementById('progStats').textContent = fmtSize(blob.size) + ' received';
+      document.getElementById('progCancelBtn').style.display = 'none';
+      document.getElementById('progCloseBtn').style.display = 'block';
+
+      // Build download UI inside progress sheet
+      const actions = document.getElementById('progActions');
+      actions.innerHTML = '';
+      await buildDownloadUI(blob, fileMetadata, actions);
+
+      showStatus('✓ File received!', 'success');
+      pendingRequest = null;
+    });
+
+    socket.off('file-cancel');
+    socket.on('file-cancel', ({ transferId: tid }) => {
+      if (tid !== transferId) return;
+      showStatus('❌ Sender cancelled the transfer', 'error');
+      closeProgress();
+      pendingRequest = null;
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Download UI
+  // ════════════════════════════════════════════════════════════════
+  async function buildDownloadUI(blob, metadata, container) {
+    if (metadata?.name?.endsWith('.zip')) {
+      const dlA = document.createElement('a');
+      dlA.href = URL.createObjectURL(blob);
+      dlA.download = metadata.name;
+      dlA.textContent = '📦 Download as ZIP';
+      dlA.className = 'dl-btn';
+      container.appendChild(dlA);
+
+      const exBtn = document.createElement('button');
+      exBtn.textContent = '📂 View / Extract Files';
+      exBtn.className = 'btn btn-outline';
+      exBtn.style.marginTop = '8px';
+      exBtn.onclick = async () => {
+        exBtn.disabled = true; exBtn.textContent = 'Extracting…';
+        await extractZip(blob, container);
+        exBtn.style.display = 'none';
+      };
+      container.appendChild(exBtn);
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = metadata?.name || 'file';
+      a.textContent = `⬇️ Download ${metadata?.name || 'file'}`;
+      a.className = 'dl-btn';
+      container.appendChild(a);
+    }
+  }
+
+  async function extractZip(blob, container) {
+    try {
+      const zip  = await JSZip.loadAsync(blob);
+      const list = document.createElement('div');
+      list.className = 'extracted-list';
+      const hdr = document.createElement('h4'); hdr.textContent = 'Files:';
+      list.appendChild(hdr);
+      for (const [path, file] of Object.entries(zip.files)) {
+        if (file.dir) continue;
+        const content = await file.async('blob');
+        const url = URL.createObjectURL(content);
+        const row = document.createElement('div'); row.className = 'file-row';
+        const a   = document.createElement('a');
+        a.href = url; a.download = path.replace(/\//g,'_');
+        a.textContent = '📄 ' + path; a.className = 'file-link';
+        row.appendChild(a); list.appendChild(row);
+      }
+      container.appendChild(list);
+    } catch (err) { alert('Extraction error: ' + err.message); }
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Progress overlay
+  // ════════════════════════════════════════════════════════════════
+  function openProgress(verb, filename) {
+    document.getElementById('progTitle').textContent = verb + '…';
+    document.getElementById('progFile').textContent  = filename;
+    document.getElementById('progFill').style.width  = '0%';
+    document.getElementById('progStats').textContent = 'Starting…';
+    document.getElementById('progActions').innerHTML = '';
+    document.getElementById('progCancelBtn').style.display = 'block';
+    document.getElementById('progCloseBtn').style.display  = 'none';
+    document.getElementById('progressOverlay').classList.add('visible');
+  }
+
+  function closeProgress() {
+    document.getElementById('progressOverlay').classList.remove('visible');
+    isTransferring = false;
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Hotspot
+  // ════════════════════════════════════════════════════════════════
+  async function toggleHotspot() {
+    const btn   = document.getElementById('hotspotBtn');
+    const creds = document.getElementById('hotspotCreds');
+
+    if (!window.swyftApp) {
+      showStatus('Hotspot control is only available in the desktop app.', 'error'); return;
+    }
+    if (!hotspotActive) {
+      btn.textContent = 'Starting…'; btn.disabled = true;
+      const res = await window.swyftApp.startHotspot();
+      btn.disabled = false;
+      if (res.success) {
+        hotspotActive = true;
+        creds.classList.add('show');
+        btn.textContent = '⏹ Stop Hotspot';
+        btn.className = 'btn btn-red';
+        showStatus('✓ Hotspot started — connect the other device to "SwyftLocal"', 'success');
+      } else {
+        btn.textContent = '📶 Start Hotspot';
+        showStatus('❌ ' + (res.message || 'Could not start hotspot'), 'error');
+      }
+    } else {
+      btn.textContent = 'Stopping…'; btn.disabled = true;
+      await window.swyftApp.stopHotspot();
+      btn.disabled = false;
+      hotspotActive = false;
+      creds.classList.remove('show');
+      btn.textContent = '📶 Start Hotspot';
+      btn.className = 'btn btn-green';
+      showStatus('Hotspot stopped.', 'info');
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // Back
+  // ════════════════════════════════════════════════════════════════
+  function goBack() {
+    if (isTransferring) { showStatus('❌ Transfer in progress — wait or cancel first', 'error'); return; }
+    socket.disconnect();
+    window.location.href = 'index.html';
+  }
+  </script>
+</body>
+</html>

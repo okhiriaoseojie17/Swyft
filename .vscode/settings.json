@@ -1,0 +1,18 @@
+{
+    "git.ignoreLimitWarning": true
+}
+{
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/dist": true
+  },
+
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true
+  },
+
+  "typescript.disableAutomaticTypeAcquisition": true,
+
+  "typescript.tsserver.maxTsServerMemory": 4096
+}

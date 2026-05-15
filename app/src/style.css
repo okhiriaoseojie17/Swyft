@@ -1,0 +1,475 @@
+/* ══════════════════════════════════════════════════════
+   Swyft Online — Shared Stylesheet (send.html / receive.html)
+   Matches the design language of local.html & index.html
+   ══════════════════════════════════════════════════════ */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --indigo:      #6366f1;
+  --indigo-dim:  rgba(99, 102, 241, 0.14);
+  --indigo-glow: rgba(99, 102, 241, 0.07);
+  --green:       #10b981;
+  --green-dim:   rgba(16, 185, 129, 0.12);
+  --red:         #ef4444;
+  --red-dim:     rgba(239, 68, 68, 0.12);
+  --surface:     #141414;
+  --surface-2:   #0f0f0f;
+  --border:      #1f1f1f;
+  --border-2:    #2a2a2a;
+  --text-muted:  #555;
+  --text-faint:  #333;
+}
+
+/* ── Base ──────────────────────────────────────────────────── */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0a0a0a;
+  color: #fff;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ── Container ─────────────────────────────────────────────── */
+.container {
+  width: 100%;
+  max-width: 460px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 32px;
+}
+
+/* ── Header ────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.back-btn {
+  background: var(--surface);
+  border: 1px solid #2a2a2a;
+  color: #777;
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color .2s, border-color .2s;
+}
+.back-btn:hover { color: #fff; border-color: #3a3a3a; }
+
+.logo-small {
+  display: flex;
+  align-items: center;
+}
+.logo-small h2 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.logo-small h2 img {
+  height: 28px;
+  width: auto;
+  display: block;
+}
+
+/* ── Page title ────────────────────────────────────────────── */
+.h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  padding: 28px 20px 4px;
+}
+
+/* ── Step pages ────────────────────────────────────────────── */
+.step-page {
+  flex: 1;
+  padding: 8px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.step-active { display: flex; }
+.step-hidden { display: none !important; }
+
+/* ── Step card ─────────────────────────────────────────────── */
+.step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.step h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--indigo-dim);
+  color: #818cf8;
+  font-size: 12px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+/* ── Instruction text ──────────────────────────────────────── */
+.instruction {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+/* ── PIN input ─────────────────────────────────────────────── */
+.pin-input-container {
+  display: flex;
+  justify-content: center;
+}
+
+.pin-input {
+  width: 100%;
+  max-width: 240px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border-2);
+  border-radius: 12px;
+  color: #fff;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 10px;
+  text-align: center;
+  padding: 14px 10px;
+  outline: none;
+  transition: border-color .2s;
+  font-family: 'SF Mono', 'Fira Mono', monospace;
+}
+.pin-input::placeholder { color: #2a2a2a; letter-spacing: 8px; }
+.pin-input:focus { border-color: var(--indigo); }
+
+/* ── PIN display (sender) ──────────────────────────────────── */
+.pin-display {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.pin-code {
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: 12px;
+  font-family: 'SF Mono', 'Fira Mono', monospace;
+  color: #fff;
+  text-indent: 12px; /* compensate letter-spacing on last char */
+  line-height: 1;
+  padding: 6px 0;
+}
+
+.pin-instruction {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.copy-btn {
+  width: auto !important;
+  padding: 8px 18px !important;
+  font-size: 13px !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border-2) !important;
+  color: #888 !important;
+  border-radius: 9px !important;
+  margin-top: 4px;
+}
+.copy-btn:hover { color: #fff !important; border-color: #3a3a3a !important; }
+
+/* ── Connection status ─────────────────────────────────────── */
+.connection-status {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 2.5px solid #1a1a1a;
+  border-top-color: var(--indigo);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.checkmark {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--green-dim);
+  color: var(--green);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+#statusText {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── File buttons ──────────────────────────────────────────── */
+.file-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.file-buttons button {
+  flex: 1;
+}
+
+.file-label {
+  display: block;
+  border: 1.5px dashed #242424;
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+}
+.file-label:hover { border-color: var(--indigo); background: var(--indigo-glow); color: #666; }
+
+/* ── File info chip ─────────────────────────────────────────── */
+.file-info {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: #888;
+  display: none;
+}
+.file-info.show { display: block; }
+.file-info strong { color: #ccc; }
+
+/* ── Primary button ─────────────────────────────────────────── */
+button {
+  width: 100%;
+  padding: 13px;
+  border-radius: 11px;
+  border: none;
+  background: var(--indigo);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.1px;
+  cursor: pointer;
+  transition: opacity .2s, transform .15s;
+}
+button:hover:not(:disabled) { opacity: .85; }
+button:active:not(:disabled) { transform: scale(.98); }
+button:disabled { opacity: .3; cursor: not-allowed; transform: none; }
+
+/* ── Danger / outline variants ─────────────────────────────── */
+#cancelBtn,
+#receiverCancelBtn {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #f87171;
+  font-weight: 600;
+}
+#cancelBtn:hover,
+#receiverCancelBtn:hover { background: var(--red-dim); }
+
+#pauseBtn,
+#endConnectionBtn {
+  background: transparent;
+  border: 1px solid var(--border-2);
+  color: #666;
+  font-weight: 600;
+}
+#pauseBtn:hover,
+#endConnectionBtn:hover { border-color: #3a3a3a; color: #aaa; }
+
+/* ── Progress bar ───────────────────────────────────────────── */
+.progress-container {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.progress-bar {
+  height: 8px;
+  background: #1a1a1a;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--indigo);
+  border-radius: 99px;
+  width: 0%;
+  transition: width .2s;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.7);
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.12), transparent);
+  animation: shimmer 1.6s infinite;
+}
+
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.transfer-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Download area ─────────────────────────────────────────── */
+.download-link {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.download-link.show { display: flex; }
+
+.download-btn {
+  display: block;
+  width: 100%;
+  padding: 13px;
+  border-radius: 11px;
+  border: none;
+  background: var(--green);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: opacity .2s;
+}
+.download-btn:hover { opacity: .85; }
+
+.action-btn {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-2);
+  background: transparent;
+  color: #777;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.action-btn:hover { color: #bbb; border-color: #3a3a3a; background: var(--surface); }
+.action-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Extracted files list ───────────────────────────────────── */
+.extracted-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.extracted-files-list h4 {
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+  font-weight: 700;
+}
+
+.file-row { display: flex; }
+
+.file-link {
+  font-size: 13px;
+  color: var(--indigo);
+  text-decoration: none;
+  padding: 6px 0;
+  transition: color .2s;
+}
+.file-link:hover { color: #a5b4fc; text-decoration: underline; }
+
+/* ── Divider ───────────────────────────────────────────────── */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* ── Status message ────────────────────────────────────────── */
+.status {
+  font-size: 13px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin: 12px 20px 0;
+  display: none;
+  line-height: 1.5;
+}
+.status.show    { display: block; }
+.status.success { background: rgba(16,185,129,.1);  color: #34d399; border: 1px solid rgba(16,185,129,.2); }
+.status.error   { background: rgba(239,68,68,.1);   color: #f87171; border: 1px solid rgba(239,68,68,.2); }
+.status.info    { background: rgba(255,255,255,.04); color: #666;    border: 1px solid var(--border); }

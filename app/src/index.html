@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Swyft</title>
+  
+  <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
+<link rel="shortcut icon" href="favicon.ico?v=v1" />
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
+<meta name="apple-mobile-web-app-title" content="Swyft" />
+<link rel="manifest" href="site.webmanifest?v=v1" />
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #ffffff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+    }
+
+    /* ── Logo ── */
+    .main-logo {
+  width: 220px;
+  max-width: 90%;
+  margin-bottom: 14px;
+  object-fit: contain;
+}
+
+    .logo {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+
+    .logo p {
+      color: #555;
+      font-size: 14px;
+      margin-top: 6px;
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Mode cards ── */
+    .modes {
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .mode-card {
+      background: #141414;
+      border: 1px solid #222;
+      border-radius: 16px;
+      padding: 28px 24px;
+      cursor: pointer;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+      transition: border-color 0.2s, background 0.2s, transform 0.15s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .mode-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 16px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .mode-card.online::before {
+      background: radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.12) 0%, transparent 70%);
+    }
+
+    .mode-card.local::before {
+      background: radial-gradient(ellipse at top left, rgba(16, 185, 129, 0.12) 0%, transparent 70%);
+    }
+
+    .mode-card:hover {
+      border-color: #333;
+      background: #181818;
+      transform: translateY(-1px);
+    }
+
+    .mode-card:hover::before { opacity: 1; }
+
+    .mode-card:active { transform: translateY(0); }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .card-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+
+    .online .card-icon { background: rgba(99, 102, 241, 0.15); }
+    .local  .card-icon { background: rgba(16, 185, 129, 0.15); }
+
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .card-badge {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .online .card-badge {
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+    }
+
+    .local .card-badge {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+    }
+
+    .card-desc {
+      font-size: 13px;
+      color: #555;
+      line-height: 1.6;
+    }
+
+    .card-features {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 16px;
+    }
+
+    .feature {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #444;
+    }
+
+    .feature-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .online .feature-dot { background: #6366f1; }
+    .local  .feature-dot { background: #10b981; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #2a2a2a;
+      font-size: 12px;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #1e1e1e;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      margin-top: 48px;
+      text-align: center;
+      color: #2e2e2e;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="logo">
+  <img src="Swyft_full_logo_colured.png" alt="Swyft" class="main-logo">
+  <p>Fast file transfer, your way</p>
+</div>
+
+  <div class="modes">
+
+    <!-- Online mode → send/receive chooser -->
+    <a class="mode-card online" href="online-home.html">
+      <div class="card-header">
+        <div class="card-icon">🌐</div>
+        <span class="card-title">Swyft Online</span>
+        <span class="card-badge">v1</span>
+      </div>
+      <p class="card-desc">Transfer files over the internet. Works between any two devices anywhere in the world.</p>
+      <div class="card-features">
+        <div class="feature"><span class="feature-dot"></span>Requires internet connection</div>
+        <div class="feature"><span class="feature-dot"></span>WebRTC peer-to-peer transfer</div>
+        <div class="feature"><span class="feature-dot"></span>6-digit PIN pairing</div>
+      </div>
+    </a>
+
+    <div class="divider">or</div>
+
+    <!-- Local mode → unified Xender-style page -->
+    <a class="mode-card local" href="local.html">
+      <div class="card-header">
+        <div class="card-icon">📡</div>
+        <span class="card-title">Swyft Local</span>
+        <span class="card-badge">New</span>
+      </div>
+      <p class="card-desc">Transfer over WiFi without internet. Faster speeds, works completely offline.</p>
+      <div class="card-features">
+        <div class="feature"><span class="feature-dot"></span>No internet needed</div>
+        <div class="feature"><span class="feature-dot"></span>Auto device discovery on LAN</div>
+        <div class="feature"><span class="feature-dot"></span>Accept / Decline incoming files</div>
+      </div>
+    </a>
+
+  </div>
+
+  <div class="footer">Swyft App · v2.0</div>
+
+</body>
+</html>

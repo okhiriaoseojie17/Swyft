@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swyft — Receive Files</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
+  <link rel="shortcut icon" href="favicon.ico?v=v1" />
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
+  <meta name="apple-mobile-web-app-title" content="Swyft" />
+  <link rel="manifest" href="site.webmanifest?v=v1" />
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <button class="back-btn" onclick="goBack()">← Back</button>
+      <div class="logo-small">
+        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft"></h2>
+      </div>
+    </div>
+
+    <h1 class="h1">Receive a File</h1>
+
+    <!-- ══════════════════════════════════════════
+         PAGE 1 — Enter PIN & Connect
+    ══════════════════════════════════════════ -->
+    <div id="step-pin" class="step-page step-active">
+
+      <div class="step">
+        <h3><span class="step-number">1</span> Enter the 6-digit PIN</h3>
+        <div class="instruction">Get the PIN from the sender's device and type it below.</div>
+
+        <div class="pin-input-container">
+          <input type="text"
+                 id="pinInput"
+                 class="pin-input"
+                 maxlength="6"
+                 placeholder="000000"
+                 pattern="[0-9]*"
+                 inputmode="numeric">
+        </div>
+
+        <button onclick="connectWithPIN()">Connect →</button>
+      </div>
+
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         PAGE 2 — Receive File
+    ══════════════════════════════════════════ -->
+    <div id="step-receive" class="step-page step-hidden">
+
+      <div class="step">
+        <h3><span class="step-number">1</span> Connected</h3>
+        <div class="connection-status" style="padding:18px;">
+          <div class="checkmark">✓</div>
+          <p style="color:rgba(52,211,153,0.9); font-weight:500;">Paired with sender</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <h3><span class="step-number">2</span> Waiting for file</h3>
+        <div class="instruction">The sender will choose a file — it will arrive here automatically.</div>
+
+        <div id="receiveProgress" class="progress-container">
+          <div class="progress-bar">
+            <div id="receiveProgressFill" class="progress-fill">0%</div>
+          </div>
+          <div id="receiveStatus" class="transfer-status">Waiting for file…</div>
+        </div>
+
+        <div id="downloadArea" class="download-link"></div>
+      </div>
+
+      <button id="receiverCancelBtn" onclick="cancelReceive()" style="display:none;">✕ Cancel Transfer</button>
+
+    </div>
+
+    <div id="receiverStatus" class="status"></div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="receiver.js"></script>
+</body>
+</html>

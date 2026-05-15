@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swyft — Send Files</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
+  <link rel="shortcut icon" href="favicon.ico?v=v1" />
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
+  <meta name="apple-mobile-web-app-title" content="Swyft" />
+  <link rel="manifest" href="site.webmanifest?v=v1" />
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <button class="back-btn" onclick="goBack()">← Back</button>
+      <div class="logo-small">
+        <h2><img src="Swyft_full_logo_colured.png" alt="Swyft"></h2>
+      </div>
+    </div>
+
+    <h1 class="h1">Send a File</h1>
+
+    <!-- ══════════════════════════════════════════
+         PAGE 1 — Connection
+    ══════════════════════════════════════════ -->
+    <div id="step-pin" class="step-page step-active">
+
+      <!-- Step 1a: Generate PIN -->
+      <div class="step">
+        <h3><span class="step-number">1</span> Generate a PIN code</h3>
+        <div class="instruction">Create a one-time PIN and share it with the receiver so they can connect.</div>
+        <button onclick="generatePIN()">Generate PIN</button>
+      </div>
+
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         PAGE 1b — Show PIN + Waiting
+    ══════════════════════════════════════════ -->
+    <div id="step-waiting" class="step-page step-hidden">
+
+      <div class="step">
+        <h3><span class="step-number">1</span> Share this PIN</h3>
+        <div id="pinDisplay" class="pin-display">
+          <div class="pin-code" id="pinCode">------</div>
+          <p class="pin-instruction">Share this code with the receiver</p>
+          <button class="copy-btn" onclick="copyPIN()">📋 Copy PIN</button>
+        </div>
+      </div>
+
+      <div class="step">
+        <h3><span class="step-number">2</span> Waiting for receiver…</h3>
+        <div class="instruction">Ask the receiver to open Swyft and enter the PIN above.</div>
+        <div id="connectionStatus" class="connection-status">
+          <div class="spinner"></div>
+          <p id="statusText">Waiting for receiver to connect…</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         PAGE 2 — Select & Send File
+    ══════════════════════════════════════════ -->
+    <div id="step-transfer" class="step-page step-hidden">
+
+      <div class="step">
+        <h3><span class="step-number">1</span> Connected</h3>
+        <div class="connection-status" style="padding:18px;">
+          <div class="checkmark">✓</div>
+          <p style="color:rgba(52,211,153,0.9); font-weight:500;">Receiver is ready</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <h3><span class="step-number">2</span> Select a file to send</h3>
+
+        <input type="file"  id="fileInput"   multiple          onchange="handleFileSelect(false)" style="display:none;">
+        <input type="file"  id="folderInput" webkitdirectory  onchange="handleFileSelect(true)"  style="display:none;">
+
+        <div class="file-buttons">
+          <button onclick="document.getElementById('fileInput').click()">📄 File(s)</button>
+          <button onclick="document.getElementById('folderInput').click()">📁 Folder</button>
+        </div>
+
+        <label class="file-label">
+          Drag files or folders here, or click a button above
+        </label>
+
+        <div id="fileInfo" class="file-info"></div>
+      </div>
+
+      <button id="sendBtn" onclick="sendFile()" disabled>Send File →</button>
+
+      <button id="pauseBtn"  onclick="togglePause()"    style="display:none;">⏸ Pause</button>
+      <button id="cancelBtn" onclick="cancelTransfer()"  style="display:none;">✕ Cancel Transfer</button>
+
+      <div id="sendProgress" class="progress-container">
+        <div class="progress-bar">
+          <div id="sendProgressFill" class="progress-fill">0%</div>
+        </div>
+        <div id="sendStatus" class="transfer-status"></div>
+      </div>
+
+      <div class="divider"></div>
+      <button id="endConnectionBtn" onclick="endConnection()">🔌 End Connection</button>
+
+    </div>
+
+    <div id="senderStatus" class="status"></div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="sender.js"></script>
+</body>
+</html>

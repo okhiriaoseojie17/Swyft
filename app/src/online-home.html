@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Swyft — Online</title>
+
+  <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
+<link rel="shortcut icon" href="favicon.ico?v=v1" />
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
+<meta name="apple-mobile-web-app-title" content="Swyft" />
+<link rel="manifest" href="site.webmanifest?v=v1" />
+
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a; color: #fff;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 32px 24px;
+    }
+
+    .header {
+      position: absolute; top: 0; left: 0; right: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 20px 24px;
+    }
+    .back-btn {
+      background: #141414; border: 1px solid #222; color: #777;
+      font-size: 13px; padding: 8px 14px; border-radius: 10px;
+      cursor: pointer; transition: color .2s, border-color .2s;
+      text-decoration: none;
+    }
+    .back-btn:hover { color: #fff; border-color: #333; }
+    .badge {
+      font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px;
+      letter-spacing: .5px; text-transform: uppercase;
+      background: rgba(99,102,241,.15); color: #818cf8;
+    }
+
+    .title { font-size: 28px; font-weight: 700; letter-spacing: -.5px; margin-bottom: 8px; }
+    .subtitle { color: #555; font-size: 14px; margin-bottom: 48px; }
+
+    .choices { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 14px; }
+
+    .choice {
+      background: #141414; border: 1px solid #222; border-radius: 16px;
+      padding: 24px 20px; cursor: pointer; text-decoration: none; color: inherit;
+      display: flex; align-items: center; gap: 16px;
+      transition: border-color .2s, background .2s, transform .15s;
+      position: relative; overflow: hidden;
+    }
+    .choice::before {
+      content: ''; position: absolute; inset: 0; border-radius: 16px;
+      background: radial-gradient(ellipse at top left, rgba(99,102,241,.1) 0%, transparent 70%);
+      opacity: 0; transition: opacity .2s;
+    }
+    .choice:hover { border-color: #2e2e2e; background: #181818; transform: translateY(-1px); }
+    .choice:hover::before { opacity: 1; }
+    .choice:active { transform: scale(.99); }
+
+    .choice-icon {
+      width: 50px; height: 50px; border-radius: 13px;
+      background: rgba(99,102,241,.14);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; flex-shrink: 0;
+    }
+    .choice-body { flex: 1; }
+    .choice-body h3 { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .choice-body p  { font-size: 12px; color: #555; line-height: 1.5; }
+    .choice-arrow { color: #2a2a2a; font-size: 20px; flex-shrink: 0; }
+
+    .logo-small {
+  margin-bottom: 18px;
+  text-align: center;
+}
+
+.logo-small img {
+  height: 52px;
+  width: auto;
+  object-fit: contain;
+}
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <a class="back-btn" href="index.html">← Back</a>
+    <span class="badge">🌐 Online</span>
+  </div>
+
+  <div class="logo-small">
+  <img src="Swyft_full_logo_colured.png" alt="Swyft">
+</div>
+
+  <div class="title">Swyft Online</div>
+  <p class="subtitle">What would you like to do?</p>
+
+  <div class="choices">
+    <a class="choice" href="send.html">
+      <div class="choice-icon">📤</div>
+      <div class="choice-body">
+        <h3>Send a File</h3>
+        <p>Generate a PIN and push files to any device anywhere</p>
+      </div>
+      <span class="choice-arrow">›</span>
+    </a>
+    <a class="choice" href="receive.html">
+      <div class="choice-icon">📥</div>
+      <div class="choice-body">
+        <h3>Receive a File</h3>
+        <p>Enter a PIN to accept files from another device</p>
+      </div>
+      <span class="choice-arrow">›</span>
+    </a>
+  </div>
+
+</body>
+</html>
