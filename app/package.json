@@ -4,8 +4,9 @@
   "description": "Swyft - Fast file transfer, online and local",
   "author": "Swyft <support@swyft.app>",
   "main": "main.js",
-  "scripts": {
+ "scripts": {
     "start": "electron .",
+    "dist": "electron-builder",
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux"
