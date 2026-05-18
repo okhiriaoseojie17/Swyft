@@ -11,6 +11,12 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    
+    # This tells GitHub to run all terminal commands inside the 'app' folder
+    defaults:
+      run:
+        working-directory: ./app
+
     steps:
       - uses: actions/checkout@v4
 
@@ -30,9 +36,10 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # We add app/ here because the upload action looks at the whole repository root
           files: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.AppImage
+            app/dist/*.exe
+            app/dist/*.dmg
+            app/dist/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
