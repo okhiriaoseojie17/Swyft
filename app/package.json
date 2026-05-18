@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Swyft - Fast file transfer, online and local",
   "author": "Swyft <support@swyft.app>",
+   "repository": {
+    "type": "git",
+    "url": "https://github.com/okhiriaoseojie17/Swyft.git"
+  },
   "main": "main.js",
  "scripts": {
     "start": "electron .",
