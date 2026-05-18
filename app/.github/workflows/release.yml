@@ -1,9 +1,8 @@
 name: Build & Release Swyft
-
 on:
   push:
     tags:
-      - 'v*'   # triggers on version tags like v1.0.0
+      - 'v*'
 
 jobs:
   build:
@@ -11,8 +10,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    
-    # This tells GitHub to run all terminal commands inside the 'app' folder
+
     defaults:
       run:
         working-directory: ./app
@@ -25,6 +23,10 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libarchive-tools
+
       - name: Install dependencies
         run: npm install
 
@@ -36,10 +38,11 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # We add app/ here because the upload action looks at the whole repository root
+          fail_on_unmatched_files: false
           files: |
             app/dist/*.exe
             app/dist/*.dmg
             app/dist/*.AppImage
+            app/dist/**/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
