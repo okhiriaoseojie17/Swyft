@@ -1,6 +1,35 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
+const os = require('os');
+
+// ─── Helper: get primary LAN IPv4 ─────────────────────────────────────────────
+function getLANIP() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+// Windows ICS / Mobile Hotspot gateway is always on 192.168.137.x
+function getHotspotIP() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal &&
+          iface.address.startsWith('192.168.137.')) {
+        return iface.address;
+      }
+    }
+  }
+  return null;
+}
+
 
 let mainWindow;
 
@@ -51,6 +80,29 @@ app.on('window-all-closed', () => {
 // adapter (common on modern drivers). The PowerShell approach uses the newer
 // Windows.Networking.NetworkOperators API to toggle the system Mobile Hotspot.
 
+// ─── Expose LAN IP to renderer ────────────────────────────────────────────────
+ipcMain.handle('get-local-ip', () => getLANIP());
+
+// ─── Expose hotspot credentials (reads real SSID/pwd from netsh after start) ──
+ipcMain.handle('get-hotspot-info', async () => {
+  return new Promise((resolve) => {
+    exec('netsh wlan show hostednetwork', (err, stdout) => {
+      if (err) {
+        resolve({ ssid: 'SwyftLocal', password: 'swyft1234', ip: getHotspotIP() || '192.168.137.1' });
+        return;
+      }
+      const ssidMatch = stdout.match(/SSID name\s*:\s*(.+)/i);
+      const ssid = ssidMatch ? ssidMatch[1].trim().replace(/^"|"$/g, '') : 'SwyftLocal';
+      // Password can only be read with show hostednetwork setting=security
+      exec('netsh wlan show hostednetwork setting=security', (err2, stdout2) => {
+        const pwdMatch = stdout2 && stdout2.match(/User Password\s*:\s*(.+)/i);
+        const password = pwdMatch ? pwdMatch[1].trim() : 'swyft1234';
+        resolve({ ssid, password, ip: getHotspotIP() || '192.168.137.1' });
+      });
+    });
+  });
+});
+
 ipcMain.handle('hotspot-start', async () => {
   if (process.platform !== 'win32') {
     return {
@@ -61,22 +113,29 @@ ipcMain.handle('hotspot-start', async () => {
 
   // ── Attempt 1: legacy hosted network ──────────────────────────
   const legacyResult = await tryLegacyHostedNetwork();
-  if (legacyResult.success) return legacyResult;
+  if (legacyResult.success) {
+    await new Promise(r => setTimeout(r, 1500));
+    const ip = getHotspotIP() || '192.168.137.1';
+    return { ...legacyResult, ssid: 'SwyftLocal', password: 'swyft1234', ip, serverUrl: 'http://' + ip + ':3001' };
+  }
 
   // ── Attempt 2: PowerShell Mobile Hotspot (Win10 1607+) ────────
   const psResult = await tryPowerShellHotspot();
-  if (psResult.success) return psResult;
+  if (psResult.success) {
+    await new Promise(r => setTimeout(r, 2000));
+    const ip = getHotspotIP() || '192.168.137.1';
+    return { ...psResult, ssid: 'Your Windows Hotspot SSID', password: 'Your Windows Hotspot Password', ip, serverUrl: 'http://' + ip + ':3001' };
+  }
 
   // ── Attempt 3: Open Windows Settings as fallback ──────────────
   shell.openExternal('ms-settings:network-mobilehotspot');
+  const fallbackIP = getLANIP();
   return {
     success: false,
     openedSettings: true,
-    message:
-      'Your WiFi adapter doesn\'t support automatic hotspot creation. ' +
-      'Windows Mobile Hotspot settings have been opened for you — ' +
-      'enable it there, then come back to Swyft. ' +
-      'Connect the other device to the hotspot, then open Swyft on it.'
+    ip: fallbackIP,
+    serverUrl: 'http://' + fallbackIP + ':3001',
+    message: "Your WiFi adapter doesn't support auto hotspot. Windows Mobile Hotspot settings opened — enable it there, connect the other device to that hotspot, then open Swyft on it."
   };
 });
 

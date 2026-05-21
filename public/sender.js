@@ -500,7 +500,7 @@ function goBack() {
     console.log('Cleanup error on back:', e);
   }
  
-  setTimeout(() => { window.location.href = 'index.html'; }, 350);
+  setTimeout(() => { window.location.href = '/'; }, 350);
 }
  
 function togglePause() {

@@ -360,7 +360,7 @@ function goBack() {
     console.log('Cleanup error on back:', e);
   }
 
-  window.location.href = 'index.html';
+  window.location.href = '/';
 }
 
 // ==========================
