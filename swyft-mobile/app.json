@@ -89,9 +89,7 @@
         }
       ],
       "@config-plugins/react-native-webrtc",
-      "expo-asset",
-      "react-native-tcp-socket",
-      "react-native-udp"
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
