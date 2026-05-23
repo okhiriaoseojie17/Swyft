@@ -1,0 +1,108 @@
+{
+  "expo": {
+    "name": "Swyft",
+    "slug": "swyft-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "swyft",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0a0a0a",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.swyft.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Swyft uses the camera to scan QR codes for local device connections.",
+        "NSLocalNetworkUsageDescription": "Swyft uses the local network to transfer files between nearby devices.",
+        "NSBonjourServices": [
+          "_http._tcp"
+        ],
+        "UIBackgroundModes": [
+          "fetch",
+          "processing"
+        ],
+        "NSPhotoLibraryUsageDescription": "Swyft can save received files to your photo library.",
+        "NSMicrophoneUsageDescription": "Swyft does not use the microphone \u2014 required by WebRTC framework."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a0a0a"
+      },
+      "package": "com.swyft.app",
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "CHANGE_WIFI_MULTICAST_STATE",
+        "FOREGROUND_SERVICE",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+      ],
+      "newArchEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0a0a0a"
+        }
+      ],
+      "expo-camera",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#10b981"
+        }
+      ],
+      [
+        "expo-document-picker",
+        {
+          "iCloudContainerEnvironment": "Production"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24
+          }
+        }
+      ],
+      "@config-plugins/react-native-webrtc",
+      "expo-asset",
+      "react-native-tcp-socket",
+      "react-native-udp"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "28db56cb-8da2-42e6-a52b-a92e4f1a1b1c"
+      }
+    }
+  }
+}
