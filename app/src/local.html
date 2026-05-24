@@ -167,6 +167,29 @@
     .note-title { font-size: 12px; font-weight: 700; color: rgba(16,185,129,0.5); margin-bottom: 8px; }
     .note-text  { font-size: 12px; color: #3a3a3a; line-height: 1.7; }
 
+    /* ── Firewall warning card ─────────────────────────────────── */
+    .warn-card {
+      background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.2);
+      border-radius: 12px; padding: 16px; display: none;
+    }
+    .warn-card.show { display: block; }
+    .warn-title { font-size: 12px; font-weight: 700; color: var(--amber); margin-bottom: 8px; }
+    .warn-text  { font-size: 12px; color: #666; line-height: 1.7; }
+    .warn-text strong { color: #999; }
+    .warn-text code {
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 5px;
+      padding: 2px 6px; font-size: 11px; font-family: monospace; color: #aaa;
+      display: block; margin: 6px 0; white-space: pre-wrap; word-break: break-all;
+    }
+    .warn-fix-btn {
+      margin-top: 12px; padding: 9px 16px; border-radius: 9px;
+      background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3);
+      color: var(--amber); font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: background .2s;
+    }
+    .warn-fix-btn:hover { background: rgba(245,158,11,0.25); }
+    .warn-fix-btn:disabled { opacity: .4; cursor: not-allowed; }
+
     /* ── Buttons ───────────────────────────────────────────────── */
     .btn {
       width: 100%; padding: 13px; border-radius: 11px; border: none;
@@ -322,6 +345,17 @@
       </div>
     </div>
 
+    <!-- Firewall / network warning (shown if checks fail) -->
+    <div class="warn-card" id="firewallWarn">
+      <div class="warn-title">⚠️ Device may be blocked by firewall or network settings</div>
+      <div class="warn-text" id="firewallWarnText">
+        Checking network configuration…
+      </div>
+      <button class="warn-fix-btn" id="firewallFixBtn" onclick="applyFirewallFixes()" style="display:none">
+        🔧 Apply fixes automatically (requires admin)
+      </button>
+    </div>
+
   </div>
 
   <!-- ── Status bar ───────────────────────────────────────────────── -->
@@ -370,27 +404,39 @@
   // ══════════════════════════════════════════════════════════════
   const SERVER_URL = 'http://localhost:3001';
 
-  // ── FIX: fetch stable identity from the backend so the name and ID used
-  // in socket.io announce exactly match what the backend broadcasts over UDP.
-  // This is what enables mobiles to find us by our Swyft UUID.
+  // ── Identity: fetched from backend so the name/ID in socket.io announce
+  // exactly match what the backend broadcasts over UDP. We MUST wait for this
+  // before calling initSocket() — otherwise the socket connects with the
+  // default 'This Device' name, the backend broadcasts that stale name over
+  // UDP, and phones see the wrong name indefinitely.
   let MY_NAME = 'This Device';
   let MY_ID   = '';
 
   async function loadDeviceIdentity() {
-    try {
-      const res  = await fetch('/device-info');
-      const info = await res.json();
-      MY_NAME = info.name || MY_NAME;
-      MY_ID   = info.id   || MY_ID;
-    } catch {
-      // Fallback: generate locally (offline / dev)
-      MY_ID = localStorage.getItem('swyftDeviceId') || '';
-      if (!MY_ID) {
-        MY_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
-        localStorage.setItem('swyftDeviceId', MY_ID);
-      }
-      MY_NAME = localStorage.getItem('swyftDeviceName') || MY_NAME;
+    // Retry up to 5 times (50 ms apart) in case Electron IPC isn't ready yet.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const res  = await fetch('/device-info');
+        const info = await res.json();
+        if (info.name && info.id) {
+          MY_NAME = info.name;
+          MY_ID   = info.id;
+          // Also persist so the fallback stays consistent across reloads.
+          localStorage.setItem('swyftDeviceName', MY_NAME);
+          localStorage.setItem('swyftDeviceId',   MY_ID);
+          document.getElementById('myDeviceName').textContent = MY_NAME;
+          return; // success
+        }
+      } catch (_) {}
+      await new Promise(r => setTimeout(r, 50));
     }
+    // Fallback: use localStorage so the identity stays stable across sessions.
+    MY_ID = localStorage.getItem('swyftDeviceId') || '';
+    if (!MY_ID) {
+      MY_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem('swyftDeviceId', MY_ID);
+    }
+    MY_NAME = localStorage.getItem('swyftDeviceName') || MY_NAME;
     document.getElementById('myDeviceName').textContent = MY_NAME;
   }
 
@@ -831,8 +877,100 @@
   }
 
   // ══════════════════════════════════════════════════════════════
+  // Network / Firewall diagnostics
+  // ══════════════════════════════════════════════════════════════
+
+  async function runNetworkCheck() {
+    try {
+      const res  = await fetch('/network-check');
+      const info = await res.json();
+
+      const problems = [];
+      const isWindows = info.os === 'win32';
+
+      if (info.networkProfile === 'Public') {
+        problems.push(
+          '<strong>WiFi network profile is Public.</strong> ' +
+          'Windows blocks multicast (device discovery) on Public networks. ' +
+          'Change it to <strong>Private</strong>: ' +
+          'Settings → Network → WiFi → [your network] → Properties → Private. ' +
+          (window.swyftApp?.openNetworkSettings
+            ? '<a href="#" onclick="window.swyftApp.openNetworkSettings();return false;" ' +
+              'style="color:var(--amber)">Open network settings →</a>'
+            : '')
+        );
+      }
+      if (info.udpBlocked) {
+        problems.push(
+          '<strong>Firewall is blocking UDP 7354</strong> (device discovery). ' +
+          'Other devices cannot find this laptop until this is fixed.'
+        );
+      }
+      if (info.tcpBlocked) {
+        problems.push(
+          '<strong>Firewall is blocking TCP 3001</strong> (file transfer). ' +
+          'Phones and other desktops cannot connect to send files here.'
+        );
+      }
+
+      const card   = document.getElementById('firewallWarn');
+      const textEl = document.getElementById('firewallWarnText');
+      const fixBtn = document.getElementById('firewallFixBtn');
+
+      if (problems.length === 0) { card.classList.remove('show'); return; }
+
+      textEl.innerHTML = problems.map(p => `<p style="margin-bottom:8px">${p}</p>`).join('');
+      card.classList.add('show');
+
+      // Auto-fix button only makes sense for the firewall rules (not network profile)
+      if (isWindows && (info.udpBlocked || info.tcpBlocked)) {
+        fixBtn.style.display = 'block';
+      } else {
+        fixBtn.style.display = 'none';
+      }
+    } catch (_) {
+      // /network-check not available (older build) — hide the card silently
+    }
+  }
+
+  async function applyFirewallFixes() {
+    const btn = document.getElementById('firewallFixBtn');
+    btn.disabled    = true;
+    btn.textContent = '⏳ Applying firewall rules…';
+    try {
+      const res  = await fetch('/apply-firewall-fixes', { method: 'POST' });
+      const info = await res.json();
+      if (info.success) {
+        btn.textContent = '✓ Done — re-checking…';
+        await new Promise(r => setTimeout(r, 900));
+        await runNetworkCheck();
+        // If card is now hidden the fixes worked
+        const card = document.getElementById('firewallWarn');
+        if (!card.classList.contains('show')) {
+          showStatus('✓ Firewall rules applied — discovery should work now', 'success');
+        }
+      } else {
+        btn.textContent = '❌ Failed — try running as Administrator';
+        btn.disabled    = false;
+        document.getElementById('firewallWarnText').innerHTML +=
+          '<p style="margin-top:8px;color:#666">Run this in an elevated Command Prompt:<br>' +
+          '<code>netsh advfirewall firewall add rule name="Swyft Discovery" dir=in action=allow protocol=UDP localport=7354</code>' +
+          '<code>netsh advfirewall firewall add rule name="Swyft Server" dir=in action=allow protocol=TCP localport=3001</code></p>';
+      }
+    } catch (_) {
+      btn.textContent = '❌ Could not reach backend';
+      btn.disabled    = false;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
   // Init
   // ══════════════════════════════════════════════════════════════
+  // IMPORTANT: loadDeviceIdentity() MUST complete before initSocket().
+  // If initSocket() runs first the socket.io announce fires with MY_NAME =
+  // 'This Device' and MY_ID = '', and the backend broadcasts that name over
+  // UDP for ~6 s before the correct identity arrives — causing phones to
+  // display the wrong device name.
   loadDeviceIdentity().then(() => {
     initSocket();
     if (window.swyftApp?.getLocalIP) {
@@ -840,6 +978,8 @@
         document.getElementById('myDeviceIP').textContent = ip + ':3001';
       });
     }
+    // Run firewall/network check after socket is up (non-blocking)
+    runNetworkCheck();
   });
 
   // ══════════════════════════════════════════════════════════════

@@ -240,18 +240,23 @@ function startDiscovery(lanIP) {
   const udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   udp.on('error', err => console.warn('[Discovery] UDP error:', err.message));
 
-  udp.bind(MULTICAST_PORT, () => {
+  // Bind to 0.0.0.0 (all interfaces) so machines with VPN adapters or multiple
+  // NICs still receive multicast packets on the right interface.
+  udp.bind(MULTICAST_PORT, '0.0.0.0', () => {
     try {
       udp.addMembership(MULTICAST_ADDR);
-      udp.setMulticastTTL(8);
-      udp.setMulticastLoopback(false);
+      // TTL 128 matches the mobile side; TTL 8 gets dropped by some home routers.
+      udp.setMulticastTTL(128);
+      // Loopback ON: required for two Swyft instances on the same machine, and on
+      // some Windows WiFi drivers setting this false silently breaks all multicast
+      // receives (not just loopback), which explains why Laptop 2 hears nothing.
+      udp.setMulticastLoopback(true);
     } catch (e) { console.warn('[Discovery] multicast setup:', e.message); }
 
-    // ── FIX: announce with DEVICE_NAME (Swyft-style) not os.hostname() ──
     const announce = () => {
       const payload = Buffer.from(JSON.stringify({
         id:       DEVICE_ID,
-        name:     DEVICE_NAME,   // was: os.hostname()
+        name:     DEVICE_NAME,
         ip:       lanIP,
         port:     PORT,
         platform: getPlatform(),
@@ -270,21 +275,99 @@ function startDiscovery(lanIP) {
       if (peer.id === DEVICE_ID)             return;
       if (peer.version !== PROTOCOL_VERSION) return;
       const isNew = !nearbyPeers.has(peer.id);
+      // Always overwrite the full entry so name/ip changes in later packets are
+      // reflected in the UI immediately — don't just update lastSeen.
       nearbyPeers.set(peer.id, { ...peer, lastSeen: Date.now() });
       if (isNew) broadcastNearbyPeers();
-      else nearbyPeers.get(peer.id).lastSeen = Date.now();
     } catch (_) {}
   });
 }
 
 app.get('/nearby-peers', (_, res) => res.json(Array.from(nearbyPeers.values())));
 
+// ─── Network / firewall diagnostics (Windows) ────────────────────────────────
+//
+// GET  /network-check         → { os, networkProfile, udpBlocked, tcpBlocked }
+// POST /apply-firewall-fixes  → runs netsh to open the required ports
+//
+// The UI (local.html) calls these on startup and shows an actionable warning
+// card when something is wrong so the user knows exactly what to fix.
+//
+const { execSync, exec: execCb } = require('child_process');
+
+app.get('/network-check', (_, res) => {
+  const result = { os: process.platform, networkProfile: null, udpBlocked: false, tcpBlocked: false };
+  if (process.platform !== 'win32') return res.json(result);
+
+  // ── 1. WiFi network profile (Public blocks multicast) ──────────────────
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "Get-NetConnectionProfile | Select-Object -ExpandProperty NetworkCategory"',
+      { timeout: 5000 }
+    ).toString();
+    if (/Public/i.test(out))       result.networkProfile = 'Public';
+    else if (/Domain/i.test(out))  result.networkProfile = 'Domain';
+    else                           result.networkProfile = 'Private';
+  } catch (_) {}
+
+  // ── 2. UDP 7354 inbound firewall rule ──────────────────────────────────
+  try {
+    const out = execSync(
+      'netsh advfirewall firewall show rule name="Swyft Discovery" dir=in',
+      { timeout: 5000 }
+    ).toString();
+    result.udpBlocked = !/Ok\./.test(out);
+  } catch (_) { result.udpBlocked = true; }
+
+  // ── 3. TCP 3001 inbound firewall rule ──────────────────────────────────
+  try {
+    const out = execSync(
+      'netsh advfirewall firewall show rule name="Swyft Server" dir=in',
+      { timeout: 5000 }
+    ).toString();
+    result.tcpBlocked = !/Ok\./.test(out);
+  } catch (_) { result.tcpBlocked = true; }
+
+  res.json(result);
+});
+
+app.post('/apply-firewall-fixes', (_, res) => {
+  if (process.platform !== 'win32')
+    return res.json({ success: true, message: 'Not Windows — no action needed' });
+
+  // These commands require the process to be running with admin privileges.
+  // If Swyft was not launched as admin they will silently do nothing — the UI
+  // falls back to showing the manual commands the user can paste themselves.
+  const cmds = [
+    'netsh advfirewall firewall add rule name="Swyft Discovery" dir=in  action=allow protocol=UDP localport=7354',
+    'netsh advfirewall firewall add rule name="Swyft Discovery Out" dir=out action=allow protocol=UDP localport=7354',
+    'netsh advfirewall firewall add rule name="Swyft Server"    dir=in  action=allow protocol=TCP localport=3001',
+  ];
+
+  let i = 0;
+  function next() {
+    if (i >= cmds.length) return res.json({ success: true });
+    execCb(cmds[i++], { timeout: 8000 }, (err) => {
+      if (err) return res.json({ success: false, message: err.message });
+      next();
+    });
+  }
+  next();
+});
+
+// ─── HTTP server + discovery startup ─────────────────────────────────────────
+// startDiscovery() is called right after server.listen() — NOT inside the
+// listen callback — so UDP multicast setup runs in parallel with TCP binding.
+// Previously it was inside the callback which added latency and could miss the
+// first announce window on slow machines.
 server.listen(PORT, '0.0.0.0', () => {
   const lanIP = getLANIP();
   console.log(`Swyft local server on http://${lanIP}:${PORT}  (${DEVICE_NAME})`);
   try { const b = new Bonjour(); b.publish({ name: 'Swyft', type: 'http', port: PORT }); }
   catch (e) { console.warn('mDNS failed:', e.message); }
-  startDiscovery(lanIP);
 });
+
+// Start UDP discovery immediately — getLANIP() is synchronous so this is safe.
+startDiscovery(getLANIP());
 
 module.exports = server;

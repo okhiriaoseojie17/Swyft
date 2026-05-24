@@ -83,6 +83,14 @@ app.on('window-all-closed', () => {
 // ─── Expose LAN IP to renderer ────────────────────────────────────────────────
 ipcMain.handle('get-local-ip', () => getLANIP());
 
+// ─── Open Windows network settings (used by firewall warning card) ────────────
+// Lets the user change their WiFi profile from Public → Private with one click.
+ipcMain.handle('open-network-settings', () => {
+  if (process.platform === 'win32') {
+    shell.openExternal('ms-settings:network-wifi');
+  }
+});
+
 // ─── Expose hotspot credentials (reads real SSID/pwd from netsh after start) ──
 ipcMain.handle('get-hotspot-info', async () => {
   return new Promise((resolve) => {

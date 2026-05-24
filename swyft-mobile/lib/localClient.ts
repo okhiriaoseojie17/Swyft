@@ -82,7 +82,10 @@ export class LocalClient {
 
     this.ioSocket.on('connect', () => {
       this.connected = true;
-      this.ioSocket!.emit('announce', { name: this.myName }, () => {});
+      // Include swyftId so the desktop server can build its UUID→socketId map.
+      // Without this the server never learns our Swyft UUID and cannot route
+      // incoming transfer requests back to us by UUID.
+      this.ioSocket!.emit('announce', { name: this.myName, swyftId: this.myId }, () => {});
       this.cb.onConnected();
     });
 
