@@ -912,6 +912,23 @@
           'Phones and other desktops cannot connect to send files here.'
         );
       }
+      if (info.multicastProfileBlocked) {
+        problems.push(
+          '<strong>Windows Firewall profile is blocking multicast responses.</strong> ' +
+          'This is a Windows 11 setting separate from per-port rules — it prevents ' +
+          'this device from receiving discovery packets even when firewall rules exist. ' +
+          'Click "Apply fixes" to correct it automatically.'
+        );
+      }
+      if (info.virtualAdapterConflict) {
+        problems.push(
+          '<strong>A virtual network adapter (Hyper-V / VMware / VirtualBox) is active.</strong> ' +
+          'Windows may route multicast traffic through the virtual adapter instead of ' +
+          'your WiFi adapter, so discovery packets from real devices never arrive. ' +
+          'Disable the virtual adapter in Device Manager if discovery is unreliable: ' +
+          'Device Manager → Network Adapters → right-click the virtual adapter → Disable.'
+        );
+      }
 
       const card   = document.getElementById('firewallWarn');
       const textEl = document.getElementById('firewallWarnText');
@@ -922,12 +939,9 @@
       textEl.innerHTML = problems.map(p => `<p style="margin-bottom:8px">${p}</p>`).join('');
       card.classList.add('show');
 
-      // Auto-fix button only makes sense for the firewall rules (not network profile)
-      if (isWindows && (info.udpBlocked || info.tcpBlocked)) {
-        fixBtn.style.display = 'block';
-      } else {
-        fixBtn.style.display = 'none';
-      }
+      // Show auto-fix button for anything the backend can fix automatically
+      const autoFixable = isWindows && (info.udpBlocked || info.tcpBlocked || info.multicastProfileBlocked);
+      fixBtn.style.display = autoFixable ? 'block' : 'none';
     } catch (_) {
       // /network-check not available (older build) — hide the card silently
     }
@@ -953,9 +967,10 @@
         btn.textContent = '❌ Failed — try running as Administrator';
         btn.disabled    = false;
         document.getElementById('firewallWarnText').innerHTML +=
-          '<p style="margin-top:8px;color:#666">Run this in an elevated Command Prompt:<br>' +
+          '<p style="margin-top:8px;color:#666">Run these in an elevated Command Prompt or PowerShell:<br>' +
           '<code>netsh advfirewall firewall add rule name="Swyft Discovery" dir=in action=allow protocol=UDP localport=7354</code>' +
-          '<code>netsh advfirewall firewall add rule name="Swyft Server" dir=in action=allow protocol=TCP localport=3001</code></p>';
+          '<code>netsh advfirewall firewall add rule name="Swyft Server" dir=in action=allow protocol=TCP localport=3001</code>' +
+          '<code>Set-NetFirewallProfile -Profile Domain,Public,Private -AllowUnicastResponseToMulticast True</code></p>';
       }
     } catch (_) {
       btn.textContent = '❌ Could not reach backend';

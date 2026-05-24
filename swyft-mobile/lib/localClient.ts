@@ -33,18 +33,23 @@ export interface LocalClientCallbacks {
 export type PeerType = 'desktop' | 'mobile';
 
 export class LocalClient {
-  private tcpSocket:  any    = null;
-  private ioSocket:   Socket | null = null;
-  private peerType:   PeerType;
-  private myId:       string;
-  private myName:     string;
-  private targetIP:   string;
-  private cb:         LocalClientCallbacks;
-  private rxBuffer:   Buffer = Buffer.alloc(0);
-  private rxMeta:     any    = null;
-  private rxBufs:     Buffer[] = [];
-  private rxStart     = 0;
-  connected           = false;
+  private tcpSocket:      any    = null;
+  private ioSocket:       Socket | null = null;
+  private peerType:       PeerType;
+  private myId:           string;
+  private myName:         string;
+  private targetIP:       string;
+  private cb:             LocalClientCallbacks;
+  private rxBuffer:       Buffer = Buffer.alloc(0);
+  private rxMeta:         any    = null;
+  private rxBufs:         Buffer[] = [];
+  private rxStart         = 0;
+  // The desktop server's own socket.id — received in the peer-list event.
+  // This is what the server uses as targetId when routing request-transfer.
+  // The desktop's Swyft UUID (activePeer.id) is NOT a valid socket.id and
+  // cannot be used for server-side routing.
+  private desktopSocketId: string | null = null;
+  connected               = false;
 
   constructor(
     myId:    string,
@@ -78,13 +83,18 @@ export class LocalClient {
   // ── Desktop connection (socket.io to port 3001) ───────────────────────────
   private _connectDesktop() {
     const url = `http://${this.targetIP}:${DESKTOP_SERVER_PORT}`;
-    this.ioSocket = io(url, { reconnection: false });
+    this.ioSocket = io(url, {
+      reconnection: false,
+      // Force WebSocket first — avoids the HTTP polling upgrade round-trip that
+      // some Windows firewall rules allow for the initial GET but then drop the
+      // upgrade, causing an immediate disconnect after connect.
+      transports: ['websocket', 'polling'],
+      timeout: 10000,
+    });
 
     this.ioSocket.on('connect', () => {
       this.connected = true;
       // Include swyftId so the desktop server can build its UUID→socketId map.
-      // Without this the server never learns our Swyft UUID and cannot route
-      // incoming transfer requests back to us by UUID.
       this.ioSocket!.emit('announce', { name: this.myName, swyftId: this.myId }, () => {});
       this.cb.onConnected();
     });
@@ -94,12 +104,25 @@ export class LocalClient {
       this.cb.onDisconnected();
     });
 
-    this.ioSocket.on('connect_error', () => {
-      this.cb.onError(`Cannot reach desktop at ${this.targetIP}:${DESKTOP_SERVER_PORT}`);
+    this.ioSocket.on('connect_error', (err: any) => {
+      this.connected = false;
+      this.cb.onError(`Cannot reach desktop at ${this.targetIP}:${DESKTOP_SERVER_PORT} — ${err?.message || 'connection refused'}`);
     });
 
+    // peer-list tells us which socket.ids are connected to the desktop server.
+    // The FIRST entry whose id !== our own socket.id is the desktop's own
+    // socket — but actually the desktop never connects to its own server as a
+    // client, so the peer-list only contains OTHER connected clients.
+    // Instead we use socket.io's built-in `id` on the server socket which the
+    // server sends back in the announce ack.
     this.ioSocket.on('peer-list', (list: any[]) => {
       this.cb.onPeerList(list.filter(p => p.id !== this.ioSocket?.id));
+    });
+
+    // The server sends its own socketId in the announce ack so the phone knows
+    // which socketId to use as targetId when requesting a transfer TO the desktop.
+    this.ioSocket.on('server-identity', ({ socketId }: any) => {
+      this.desktopSocketId = socketId;
     });
 
     this.ioSocket.on('incoming-request', ({ transferId, from, meta }: any) => {
@@ -211,7 +234,12 @@ export class LocalClient {
   requestTransfer(targetId: string, meta: any, cb: (res: any) => void) {
     const transferId = `${this.myId}::${Date.now()}`;
     if (this.ioSocket) {
-      this.ioSocket.emit('request-transfer', { targetId, meta }, cb);
+      // The server routes by socket.id. activePeer.id is the desktop's Swyft
+      // UUID (from UDP discovery) — the server has no socket with that id.
+      // Use desktopSocketId (received via 'server-identity' event) when we have
+      // it; fall back to the passed-in targetId only as a last resort.
+      const routingId = this.desktopSocketId ?? targetId;
+      this.ioSocket.emit('request-transfer', { targetId: routingId, meta }, cb);
     } else {
       this._writeFrame(Buffer.from(JSON.stringify({ type: 'request-transfer', transferId, meta })));
       cb({ success: true, transferId });

@@ -91,6 +91,11 @@ io.on('connection', (socket) => {
     if (swyftId) peersBySwyftId.set(swyftId, socket.id);
     broadcastPeerList();
     cb?.({ success: true, id: socket.id });
+
+    // Tell the connecting client what OUR socket.id is so it can use it as
+    // targetId in request-transfer. The phone only knows our Swyft UUID from
+    // UDP discovery — that UUID is not a valid socket.id for server routing.
+    socket.emit('server-identity', { socketId: socket.id });
   });
 
   // ── FIX: resolve targetId as either socket.id OR swyftId ────────────────
@@ -251,6 +256,14 @@ function startDiscovery(lanIP) {
       // some Windows WiFi drivers setting this false silently breaks all multicast
       // receives (not just loopback), which explains why Laptop 2 hears nothing.
       udp.setMulticastLoopback(true);
+      // Pin multicast to the LAN adapter explicitly.
+      // On Windows 11 with Intel AX/BE series WiFi drivers, the OS may route
+      // multicast through the wrong interface (e.g. a virtual VMware/Hyper-V
+      // adapter) when setMulticastInterface is not called. This is the most
+      // common reason a laptop can send UDP but never receives any packets.
+      if (lanIP !== '127.0.0.1') {
+        udp.setMulticastInterface(lanIP);
+      }
     } catch (e) { console.warn('[Discovery] multicast setup:', e.message); }
 
     const announce = () => {
@@ -296,7 +309,14 @@ app.get('/nearby-peers', (_, res) => res.json(Array.from(nearbyPeers.values())))
 const { execSync, exec: execCb } = require('child_process');
 
 app.get('/network-check', (_, res) => {
-  const result = { os: process.platform, networkProfile: null, udpBlocked: false, tcpBlocked: false };
+  const result = {
+    os: process.platform,
+    networkProfile: null,
+    udpBlocked: false,
+    tcpBlocked: false,
+    multicastProfileBlocked: false,  // Windows Firewall profile blocks multicast at profile level
+    virtualAdapterConflict: false,   // Hyper-V/VMware adapter stealing multicast traffic
+  };
   if (process.platform !== 'win32') return res.json(result);
 
   // ── 1. WiFi network profile (Public blocks multicast) ──────────────────
@@ -328,6 +348,35 @@ app.get('/network-check', (_, res) => {
     result.tcpBlocked = !/Ok\./.test(out);
   } catch (_) { result.tcpBlocked = true; }
 
+  // ── 4. Profile-level multicast blocking ───────────────────────────────
+  // Windows Firewall has a per-profile setting (AllowLocalPolicyMerge and
+  // AllowUnicastResponseToMulticast) that blocks multicast independently of
+  // any per-port rules. This is the most common Windows 11 issue — adding
+  // netsh rules doesn't help because the block is at the profile level.
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "Get-NetFirewallProfile | Select-Object -ExpandProperty AllowUnicastResponseToMulticast"',
+      { timeout: 5000 }
+    ).toString();
+    // If any profile has this set to False, multicast responses are dropped
+    if (/False/i.test(out)) result.multicastProfileBlocked = true;
+  } catch (_) {}
+
+  // ── 5. Virtual adapter conflict (Hyper-V/VMware/VirtualBox) ──────────
+  // When Hyper-V or VMware is installed, Windows routes multicast through
+  // the virtual switch adapter instead of the physical WiFi adapter.
+  // Node's dgram.addMembership() joins on the first available interface,
+  // which may be the virtual one — so packets from real devices never arrive.
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "Get-NetAdapter | Where-Object { $_.Status -eq \'Up\' } | Select-Object -ExpandProperty InterfaceDescription"',
+      { timeout: 5000 }
+    ).toString();
+    if (/hyper-v|vmware|virtualbox|vethernet/i.test(out)) {
+      result.virtualAdapterConflict = true;
+    }
+  } catch (_) {}
+
   res.json(result);
 });
 
@@ -335,13 +384,16 @@ app.post('/apply-firewall-fixes', (_, res) => {
   if (process.platform !== 'win32')
     return res.json({ success: true, message: 'Not Windows — no action needed' });
 
-  // These commands require the process to be running with admin privileges.
-  // If Swyft was not launched as admin they will silently do nothing — the UI
-  // falls back to showing the manual commands the user can paste themselves.
   const cmds = [
-    'netsh advfirewall firewall add rule name="Swyft Discovery" dir=in  action=allow protocol=UDP localport=7354',
+    // UDP 7354 — device discovery
+    'netsh advfirewall firewall add rule name="Swyft Discovery"     dir=in  action=allow protocol=UDP localport=7354',
     'netsh advfirewall firewall add rule name="Swyft Discovery Out" dir=out action=allow protocol=UDP localport=7354',
-    'netsh advfirewall firewall add rule name="Swyft Server"    dir=in  action=allow protocol=TCP localport=3001',
+    // TCP 3001 — file transfer server
+    'netsh advfirewall firewall add rule name="Swyft Server"        dir=in  action=allow protocol=TCP localport=3001',
+    // Re-enable UnicastResponseToMulticast on all profiles.
+    // This is the profile-level setting that Windows 11 sometimes sets to False,
+    // which causes multicast to be silently dropped even when per-port rules exist.
+    'powershell -NoProfile -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -AllowUnicastResponseToMulticast True"',
   ];
 
   let i = 0;
