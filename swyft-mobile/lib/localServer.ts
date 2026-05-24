@@ -1,31 +1,13 @@
 /**
  * lib/localServer.ts
  *
- * Lightweight in-app file-transfer server that runs directly on the phone.
- * Uses the same event names as desktop local-server.js so desktop and mobile
- * are 100% interoperable.
+ * Lightweight in-app TCP server for phone↔phone local transfers (port 3002).
+ * Mobile→desktop uses socket.io-client (see localClient.ts).
  *
- * Architecture:
- *   - Each device runs this server on port 3001
- *   - Peers connect to each other's servers directly (peer-to-peer over LAN)
- *   - Transfer flow: request-transfer → transfer-response → file-metadata
- *                    → file-chunk(s) → file-end
- *
- * We use react-native-tcp-socket for the raw TCP layer and implement a minimal
- * length-prefixed JSON + binary framing protocol on top, because Socket.io
- * cannot run as a *server* in React Native (only as a client).
- *
- * The mobile CLIENT (lib/localClient.ts) speaks the same framing protocol.
- * The desktop still uses Socket.io — we provide a compatibility shim so
- * mobile↔desktop works by having the mobile CLIENT use socket.io-client
- * when connecting to a desktop server, and the in-app server accepts
- * both socket.io handshakes and direct connections.
- *
- * SIMPLIFICATION FOR V1:
- * Rather than implementing a full Socket.io server (very complex in RN),
- * we run a plain JSON-over-TCP server on port 3002 for phone↔phone,
- * and use socket.io-client on port 3001 for phone→desktop.
- * The discovery packet includes both ports so peers know which to use.
+ * Framing: every message is [4-byte big-endian length][payload].
+ * Binary file chunks are sent as two consecutive frames:
+ *   Frame 1: JSON  { type:'chunk', transferId }
+ *   Frame 2: binary payload
  */
 
 import TcpSocket from 'react-native-tcp-socket';
@@ -53,10 +35,12 @@ export interface LocalServerCallbacks {
 }
 
 interface ConnectedClient {
-  id:     string;
-  name:   string;
-  socket: any;
-  buffer: Buffer;
+  id:             string;
+  name:           string;
+  socket:         any;
+  buffer:         Buffer;
+  // FIX: track whether the next frame is a binary chunk (not JSON)
+  awaitingBinaryForTid: string | null;
 }
 
 export class LocalServer extends EventEmitter {
@@ -103,36 +87,34 @@ export class LocalServer extends EventEmitter {
     this.server = null;
   }
 
-  // ── Send a message to a specific client ──────────────────────────────────────
   sendTo(clientId: string, msg: object) {
     const client = this.clients.get(clientId);
     if (!client) return;
     this._writeFrame(client.socket, Buffer.from(JSON.stringify(msg)));
   }
 
-  // ── Send binary chunk to a specific client ────────────────────────────────────
   sendChunkTo(clientId: string, transferId: string, chunk: Buffer) {
     const client = this.clients.get(clientId);
     if (!client) return;
-    // Frame: { type: 'chunk', transferId } header + binary payload
-    const header = Buffer.from(JSON.stringify({ type: 'chunk', transferId }));
-    const lenBuf = Buffer.alloc(4);
-    lenBuf.writeUInt32BE(header.length, 0);
-    const lenBuf2 = Buffer.alloc(4);
-    lenBuf2.writeUInt32BE(chunk.length, 0);
-    try {
-      client.socket.write(Buffer.concat([lenBuf, header, lenBuf2, chunk]));
-    } catch (_) {}
+    const header  = Buffer.from(JSON.stringify({ type: 'chunk', transferId }));
+    const lenBuf1 = Buffer.alloc(4); lenBuf1.writeUInt32BE(header.length, 0);
+    const lenBuf2 = Buffer.alloc(4); lenBuf2.writeUInt32BE(chunk.length,  0);
+    try { client.socket.write(Buffer.concat([lenBuf1, header, lenBuf2, chunk])); } catch (_) {}
   }
 
   getPeers(): { id: string; name: string }[] {
     return Array.from(this.clients.values()).map(c => ({ id: c.id, name: c.name }));
   }
 
-  // ── Private: handle new incoming client connection ───────────────────────────
   private _handleClient(socket: any) {
     const tempId = Math.random().toString(36).slice(2);
-    const client: ConnectedClient = { id: tempId, name: 'Unknown', socket, buffer: Buffer.alloc(0) };
+    const client: ConnectedClient = {
+      id:     tempId,
+      name:   'Unknown',
+      socket,
+      buffer: Buffer.alloc(0),
+      awaitingBinaryForTid: null,   // FIX: initialise per-client binary tracking
+    };
 
     socket.on('data', (data: Buffer) => {
       client.buffer = Buffer.concat([client.buffer, data]);
@@ -153,7 +135,6 @@ export class LocalServer extends EventEmitter {
     this.clients.set(tempId, client);
   }
 
-  // ── Framing: 4-byte big-endian length prefix + payload ──────────────────────
   private _writeFrame(socket: any, payload: Buffer) {
     const lenBuf = Buffer.alloc(4);
     lenBuf.writeUInt32BE(payload.length, 0);
@@ -166,14 +147,22 @@ export class LocalServer extends EventEmitter {
       const msgLen = client.buffer.readUInt32BE(0);
       if (client.buffer.length < 4 + msgLen) break;
 
-      const msgBuf = client.buffer.slice(4, 4 + msgLen);
-      client.buffer = client.buffer.slice(4 + msgLen);
+      const msgBuf      = client.buffer.slice(4, 4 + msgLen);
+      client.buffer     = client.buffer.slice(4 + msgLen);
+
+      // ── FIX: if we're waiting for a binary payload, deliver it directly ──
+      if (client.awaitingBinaryForTid !== null) {
+        const tid = client.awaitingBinaryForTid;
+        client.awaitingBinaryForTid = null;
+        this.cb.onFileChunk(tid, msgBuf);
+        continue;
+      }
 
       try {
         const msg = JSON.parse(msgBuf.toString());
         this._handleMessage(client, msg);
       } catch (_) {
-        // Not JSON — ignore (shouldn't happen with proper framing)
+        // Unexpected non-JSON frame — ignore
       }
     }
   }
@@ -181,19 +170,20 @@ export class LocalServer extends EventEmitter {
   private _handleMessage(client: ConnectedClient, msg: any) {
     switch (msg.type) {
 
-      case 'hello':
-        // First message from a connecting peer — they identify themselves
+      case 'hello': {
+        // ── FIX: delete the old TEMP id, not the new one ──
+        const oldId = client.id;
         client.id   = msg.id;
         client.name = msg.name;
-        this.clients.delete(client.id); // remove temp entry
+        this.clients.delete(oldId);       // was: this.clients.delete(client.id) — wrong!
         this.clients.set(msg.id, client);
-        // Respond with our identity
         this._writeFrame(client.socket, Buffer.from(JSON.stringify({
           type: 'hello-ack', id: this.myId, name: this.myName,
         })));
         this.cb.onPeerConnected(client.id, client.name);
         this.emit('peer-list-changed');
         break;
+      }
 
       case 'request-transfer':
         this.cb.onTransferRequest({
@@ -214,9 +204,8 @@ export class LocalServer extends EventEmitter {
         break;
 
       case 'chunk':
-        // Binary chunk follows immediately after this header frame
-        // Already handled by sendChunkTo — but receiving side needs special handling
-        // See LocalClient for the receive path
+        // ── FIX: mark that the very next frame is the binary payload ──
+        client.awaitingBinaryForTid = msg.transferId;
         break;
 
       case 'file-end':

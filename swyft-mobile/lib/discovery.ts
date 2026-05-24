@@ -1,31 +1,15 @@
-/**
- * lib/discovery.ts
- *
- * UDP multicast peer discovery — identical protocol used by both
- * the mobile app and the desktop local-server.js.
- *
- * Every device on the same WiFi:
- *   1. Joins multicast group 224.0.0.167 port 7354
- *   2. Broadcasts an announcement every 2 seconds
- *   3. Listens for announcements from others
- *   4. Builds a live peer list that expires stale entries
- *
- * Announcement packet (JSON):
- *   { id, name, ip, port, platform, version }
- *
- * Uses react-native-udp (wraps the native UDP socket API).
- */
-
 import UdpSocket from 'react-native-udp';
 import { Platform } from 'react-native';
 import * as Network from 'expo-network';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+// 1. Import the polyfill Buffer explicitely
+import { Buffer } from 'buffer'; 
 
-export const MULTICAST_ADDR  = '224.0.0.167';
-export const MULTICAST_PORT  = 7354;
-export const SERVER_PORT     = 3001;
+export const MULTICAST_ADDR   = '224.0.0.167';
+export const MULTICAST_PORT   = 7354;
+export const SERVER_PORT      = 3001;
 export const ANNOUNCE_INTERVAL_MS = 2000;
-export const PEER_EXPIRY_MS       = 6000;   // remove peer if silent for 6s
+export const PEER_EXPIRY_MS       = 6000;
 export const PROTOCOL_VERSION     = 1;
 
 export interface SwyftPeer {
@@ -35,13 +19,12 @@ export interface SwyftPeer {
   port:      number;
   platform:  'android' | 'ios' | 'windows' | 'mac' | 'linux';
   version:   number;
-  lastSeen:  number;  // Date.now()
-  serverUrl: string;  // http://ip:port
+  lastSeen:  number;
+  serverUrl: string;
 }
 
 export type PeerListCallback = (peers: SwyftPeer[]) => void;
 
-// ─── Stable device ID ─────────────────────────────────────────────────────────
 async function getDeviceId(): Promise<string> {
   const key = 'swyft_device_id';
   let id = await AsyncStorage.getItem(key);
@@ -65,15 +48,14 @@ async function getDeviceName(): Promise<string> {
   return name;
 }
 
-// ─── Discovery service ────────────────────────────────────────────────────────
 export class DiscoveryService {
-  private socket:       any           = null;
-  private announceTimer: any          = null;
-  private expiryTimer:   any          = null;
-  private peers:         Map<string, SwyftPeer> = new Map();
-  private myId:          string       = '';
-  private myName:        string       = '';
-  private myIP:          string       = '';
+  private socket:       any                    = null;
+  private announceTimer: any                   = null;
+  private expiryTimer:   any                   = null;
+  private peers:          Map<string, SwyftPeer> = new Map();
+  private myId:          string               = '';
+  private myName:        string               = '';
+  private myIP:          string               = '';
   private myPlatform:    SwyftPeer['platform'];
   private onPeers:       PeerListCallback;
   private running        = false;
@@ -97,10 +79,14 @@ export class DiscoveryService {
       console.warn('[Discovery] socket error:', err.message);
     });
 
-    this.socket.on('message', (msg: Buffer, rinfo: any) => {
+    // 2. Change type here to a safe instance or Uint8Array/any
+    this.socket.on('message', (msg: any, rinfo: any) => { 
       try {
-        const peer = JSON.parse(msg.toString()) as Omit<SwyftPeer, 'lastSeen' | 'serverUrl'>;
-        if (peer.id === this.myId) return;       // ignore own announcements
+        // 3. Explicitly transform the incoming message to a string safely
+        const dataString = typeof msg === 'string' ? msg : Buffer.from(msg).toString('utf8');
+        const peer = JSON.parse(dataString) as Omit<SwyftPeer, 'lastSeen' | 'serverUrl'>;
+        
+        if (peer.id === this.myId) return;
         if (peer.version !== PROTOCOL_VERSION) return;
 
         const full: SwyftPeer = {
@@ -113,18 +99,30 @@ export class DiscoveryService {
       } catch (_) {}
     });
 
-    this.socket.bind(MULTICAST_PORT, () => {
-      try {
-        this.socket.addMembership(MULTICAST_ADDR);
-        this.socket.setMulticastTTL(8);
-        this.socket.setMulticastLoopback(false);
-      } catch (e) {
-        console.warn('[Discovery] multicast setup:', e);
-      }
-      this._startAnnouncing();
-    });
+    this.socket.bind(
+  MULTICAST_PORT,
+  '0.0.0.0',
+  () => {
+    try {
+      this.socket.addMembership(MULTICAST_ADDR);
 
-    // Expire stale peers every 2 seconds
+      if (this.socket.setMulticastTTL) {
+        this.socket.setMulticastTTL(128);
+      }
+
+      if (this.socket.setMulticastLoopback) {
+        this.socket.setMulticastLoopback(true);
+      }
+
+      console.log('[Discovery] multicast ready');
+    } catch (e) {
+      console.warn('[Discovery] multicast setup:', e);
+    }
+
+    this._startAnnouncing();
+  }
+);
+
     this.expiryTimer = setInterval(() => {
       const now    = Date.now();
       let changed  = false;
@@ -163,7 +161,9 @@ export class DiscoveryService {
         platform: this.myPlatform,
         version:  PROTOCOL_VERSION,
       });
-      const buf = Buffer.from(payload);
+      
+      // 4. Uses polyfilled buffer context safely
+      const buf = Buffer.from(payload, 'utf8');
       this.socket.send(buf, 0, buf.length, MULTICAST_PORT, MULTICAST_ADDR, () => {});
     };
     announce();

@@ -10,3 +10,14 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 node_modules
+android
+.expo
+
+android/
+**/android/
+
+.expo/
+**/.expo/
+
+expo-env.d.ts
+**/expo-env.d.ts

@@ -2,14 +2,6 @@
  * lib/transferManager.ts
  *
  * Single entry point for all local-mode operations.
- * Manages the lifecycle of:
- *   - DiscoveryService  (UDP multicast — find peers automatically)
- *   - LocalServer       (TCP server — accept incoming connections)
- *   - LocalClient       (TCP/socket.io client — connect to a peer)
- *   - File transfer     (send/receive chunks)
- *
- * React components only interact with TransferManager — never directly
- * with the layers below.
  */
 
 import * as FileSystem from 'expo-file-system';
@@ -21,13 +13,13 @@ import { showTransferNotification, dismissTransferNotification } from './backgro
 const CHUNK_SIZE = 256 * 1024;
 
 export interface TMCallbacks {
-  onPeersChanged:     (peers: SwyftPeer[])                          => void;
-  onIncomingRequest:  (req: TransferRequest)                         => void;
+  onPeersChanged:     (peers: SwyftPeer[])                                      => void;
+  onIncomingRequest:  (req: TransferRequest)                                     => void;
   onTransferProgress: (pct: number, speed: number, sent: number, total: number) => void;
-  onTransferComplete: (fileName: string, uri: string)                => void;
-  onTransferError:    (msg: string)                                  => void;
-  onRemoteCancel:     ()                                             => void;
-  onSendComplete:     ()                                             => void;
+  onTransferComplete: (fileName: string, uri: string)                            => void;
+  onTransferError:    (msg: string)                                              => void;
+  onRemoteCancel:     ()                                                         => void;
+  onSendComplete:     ()                                                         => void;
 }
 
 export class TransferManager {
@@ -55,29 +47,29 @@ export class TransferManager {
     });
   }
 
-  // ── Start everything ───────────────────────────────────────────────────────
   async start() {
     await this.discovery.start();
     this.myId   = this.discovery.getMyId();
     this.myName = this.discovery.getMyName();
     this.myIP   = this.discovery.getMyIP();
 
-    // Start the in-app TCP server so other phones can connect to us
     this.server = new LocalServer(this.myId, this.myName, {
       onPeerConnected:    (id, name) => console.log('[TM] peer connected:', name),
       onPeerDisconnected: (id)       => console.log('[TM] peer disconnected:', id),
-      onTransferRequest:  (req)      => {
+
+      onTransferRequest: (req) => {
         this.currentTid = req.transferId;
         this.cb.onIncomingRequest(req);
       },
-      onTransferAccepted: (tid) => {},   // we are the receiver; sender handles this
-      onTransferDeclined: (tid) => {},
-      onFileMetadata: (tid, meta) => {
+      onTransferAccepted: (_tid) => {},
+      onTransferDeclined: (_tid) => {},
+
+      onFileMetadata: (_tid, meta) => {
         this.rxMeta  = meta;
         this.rxBufs  = [];
         this.rxStart = Date.now();
       },
-      onFileChunk: (tid, chunk) => {
+      onFileChunk: (_tid, chunk) => {
         this.rxBufs.push(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
         const rx      = this.rxBufs.reduce((s, b) => s + b.byteLength, 0);
         const total   = this.rxMeta?.size || 1;
@@ -86,11 +78,11 @@ export class TransferManager {
         this.cb.onTransferProgress(Math.round((rx / total) * 100), speed, rx, total);
         showTransferNotification(this.rxMeta?.name || 'file', Math.round((rx / total) * 100));
       },
-      onFileEnd: async (tid) => {
+      onFileEnd: async (_tid) => {
         dismissTransferNotification();
         await this._assembleAndSave();
       },
-      onFileCancel: (tid) => {
+      onFileCancel: (_tid) => {
         this.rxBufs = []; this.rxMeta = null; this.currentTid = null;
         this.cb.onRemoteCancel();
       },
@@ -114,43 +106,44 @@ export class TransferManager {
   getMyIP()    { return this.myIP;   }
   getPeers()   { return this.peers;  }
 
-  // ── Connect to a peer (tap their card) ────────────────────────────────────
+  // ── Connect to a peer ──────────────────────────────────────────────────────
   connectToPeer(peer: SwyftPeer): Promise<void> {
     return new Promise((resolve, reject) => {
       this.client?.disconnect();
       this.activePeer = peer;
 
-      // Determine if peer is desktop (port 3001) or mobile (port 3002)
-      const peerType = (peer.platform === 'windows' || peer.platform === 'mac' || peer.platform === 'linux')
-        ? 'desktop' : 'mobile';
+      const peerType = (
+        peer.platform === 'windows' ||
+        peer.platform === 'mac'     ||
+        peer.platform === 'linux'
+      ) ? 'desktop' : 'mobile';
 
       this.client = new LocalClient(this.myId, this.myName, peer.ip, peerType, {
         onConnected:    () => resolve(),
         onDisconnected: () => {},
         onError:        (msg) => reject(new Error(msg)),
-        onPeerList:     (list) => {},
+        onPeerList:     (_list) => {},   // informational; not needed for transfer routing
 
         onTransferRequest: (tid, from, meta) => {
           this.currentTid = tid;
           this.cb.onIncomingRequest({ transferId: tid, from, fromId: peer.id, meta });
         },
         onTransferAccepted: (tid) => {
-          // Remote accepted our send request — start sending
           if (this._pendingSendFile) {
             this._doSend(tid, this._pendingSendFile);
             this._pendingSendFile = null;
           }
         },
-        onTransferDeclined: (tid) => {
+        onTransferDeclined: (_tid) => {
           this.cb.onTransferError('Transfer declined');
           this._pendingSendFile = null;
         },
-        onFileMetadata: (tid, meta) => {
+        onFileMetadata: (_tid, meta) => {
           this.rxMeta  = meta;
           this.rxBufs  = [];
           this.rxStart = Date.now();
         },
-        onFileChunk: (tid, chunk) => {
+        onFileChunk: (_tid, chunk) => {
           this.rxBufs.push(chunk);
           const rx      = this.rxBufs.reduce((s, b) => s + b.byteLength, 0);
           const total   = this.rxMeta?.size || 1;
@@ -159,11 +152,11 @@ export class TransferManager {
           this.cb.onTransferProgress(Math.round((rx / total) * 100), speed, rx, total);
           showTransferNotification(this.rxMeta?.name || 'file', Math.round((rx / total) * 100));
         },
-        onFileEnd: async (tid) => {
+        onFileEnd: async (_tid) => {
           dismissTransferNotification();
           await this._assembleAndSave();
         },
-        onFileCancel: (tid) => {
+        onFileCancel: (_tid) => {
           this.rxBufs = []; this.rxMeta = null; this.currentTid = null;
           this.cb.onRemoteCancel();
         },
@@ -171,14 +164,13 @@ export class TransferManager {
 
       this.client.connect();
 
-      // Timeout if no connection in 8 seconds
       setTimeout(() => {
         if (!this.client?.connected) reject(new Error(`Cannot reach ${peer.name} at ${peer.ip}`));
       }, 8000);
     });
   }
 
-  // ── Send a file to the currently connected peer ──────────────────────────
+  // ── Send a file to the connected peer ─────────────────────────────────────
   private _pendingSendFile: { uri: string; name: string; size: number } | null = null;
 
   async sendFile(file: { uri: string; name: string; size: number }) {
@@ -188,33 +180,43 @@ export class TransferManager {
     this._pendingSendFile = file;
     const meta = { name: file.name, size: file.size, mimeType: 'application/octet-stream' };
 
-    this.client.requestTransfer('', meta, (res: any) => {
+    // ── FIX: use activePeer.id (Swyft UUID) as targetId ──────────────────
+    // For desktop targets: local-server.js resolves Swyft UUID → socket.id via
+    // its peersBySwyftId map (populated when desktop UI announces with swyftId).
+    // For mobile targets: the TCP path ignores targetId entirely (direct TCP).
+    const targetId = this.activePeer?.id ?? '';
+
+    this.client.requestTransfer(targetId, meta, (res: any) => {
       if (!res.success) {
-        this.cb.onTransferError('Request failed: ' + res.message);
+        this.cb.onTransferError('Request failed: ' + (res.message || 'unknown error'));
         this._pendingSendFile = null;
       }
-      // If success, wait for onTransferAccepted callback to start sending
+      // On success, wait for onTransferAccepted to start the actual send
     });
   }
 
   respondToTransfer(accepted: boolean) {
     if (!this.currentTid) return;
     const tid = this.currentTid;
-    // Respond via whichever connection delivered the request
+
     if (this.client?.connected) {
+      // Request arrived via our outbound client connection
       this.client.respondToTransfer(tid, accepted);
     } else if (this.server) {
-      // Request came via our server — find the client and respond
-      // Server-side response: the server needs to send back to the connecting client
-      // This is handled in localServer via sendTo
-      this.server.sendTo(tid.split('::')[0], JSON.stringify({
-        type: 'transfer-response', transferId: tid, accepted,
-      }));
+      // Request arrived via our inbound server — respond to the connecting peer.
+      // tid format is "${senderSwyftId}::${timestamp}"; first segment is their ID.
+      const senderId = tid.split('::')[0];
+
+      // ── FIX: pass a plain object — sendTo() calls JSON.stringify internally ──
+      // (was: JSON.stringify({...}) passed to sendTo which double-encoded it)
+      this.server.sendTo(senderId, {
+        type: 'transfer-response',
+        transferId: tid,
+        accepted,
+      });
     }
+
     if (!accepted) this.currentTid = null;
-    else {
-      // Accepted — open receive progress (file data will arrive via callbacks)
-    }
   }
 
   cancelTransfer() {
@@ -223,7 +225,7 @@ export class TransferManager {
     this.currentTid = null; this.rxBufs = []; this.rxMeta = null;
   }
 
-  // ── Private: do the actual send ──────────────────────────────────────────
+  // ── Private: perform the actual file send ─────────────────────────────────
   private async _doSend(transferId: string, file: { uri: string; name: string; size: number }) {
     try {
       const meta = { name: file.name, size: file.size, mimeType: 'application/octet-stream' };
@@ -253,9 +255,10 @@ export class TransferManager {
 
         const elapsed = (Date.now() - t0) / 1000;
         const speed   = elapsed > 0 ? (offset / 1024 / 1024) / elapsed : 0;
-        const pct     = Math.round((offset / buf.byteLength) * 100);
-        this.cb.onTransferProgress(pct, speed, offset, buf.byteLength);
-        showTransferNotification(file.name, pct);
+        this.cb.onTransferProgress(
+          Math.round((offset / buf.byteLength) * 100), speed, offset, buf.byteLength,
+        );
+        showTransferNotification(file.name, Math.round((offset / buf.byteLength) * 100));
         setTimeout(sendNext, 0);
       };
       sendNext();
@@ -264,7 +267,7 @@ export class TransferManager {
     }
   }
 
-  // ── Private: assemble received chunks and save to cache ─────────────────
+  // ── Private: assemble received chunks and save to cache ───────────────────
   private async _assembleAndSave() {
     try {
       const total = this.rxBufs.reduce((s, b) => s + b.byteLength, 0);
@@ -275,13 +278,11 @@ export class TransferManager {
       const fileName = this.rxMeta?.name || 'received_file';
       const dest     = FileSystem.cacheDirectory + fileName;
 
-      // Convert to base64 for FileSystem.writeAsStringAsync
       let b64 = '';
-      const chunk = 8192;
-      for (let i = 0; i < out.length; i += chunk) {
-        b64 += String.fromCharCode(...out.subarray(i, i + chunk));
+      const chunkSz = 8192;
+      for (let i = 0; i < out.length; i += chunkSz) {
+        b64 += String.fromCharCode(...out.subarray(i, i + chunkSz));
       }
-
       await FileSystem.writeAsStringAsync(dest, btoa(b64), {
         encoding: FileSystem.EncodingType.Base64,
       });

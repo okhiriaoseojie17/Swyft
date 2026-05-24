@@ -4,7 +4,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import { requestNotificationPermissions, registerBackgroundTask } from '@/lib/background';
-
+import 'react-native-get-random-values';
+import '../lib/polyfills';
 // Prevent the splash from auto-hiding before we're ready
 SplashScreen.preventAutoHideAsync();
 
