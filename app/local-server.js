@@ -230,10 +230,48 @@ setInterval(() => {
 
 function getLANIP() {
   const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces))
-    for (const iface of ifaces[name])
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
-  return '127.0.0.1';
+  const candidates = [];
+
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      const ip = iface.address;
+
+      // Skip virtual/tunnel adapter ranges:
+      //   172.16-31.x  = Hyper-V, Docker, VMware NAT
+      //   169.254.x.x  = APIPA link-local (no DHCP)
+      //   10.0.2.x     = VirtualBox NAT guest
+      const isVirtualIP =
+        /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+        /^169\.254\./.test(ip) ||
+        /^10\.0\.2\./.test(ip);
+
+      // Skip adapters whose name looks virtual
+      const nameLC = name.toLowerCase();
+      const isVirtualName =
+        nameLC.includes('vmware')     ||
+        nameLC.includes('virtualbox') ||
+        nameLC.includes('vethernet')  ||
+        nameLC.includes('docker')     ||
+        nameLC.includes('wsl')        ||
+        nameLC.includes('loopback')   ||
+        nameLC.includes('pseudo');
+
+      if (isVirtualIP || isVirtualName) continue;
+
+      // Score candidates: prefer common home/office LAN ranges
+      const score =
+        ip.startsWith('192.168.') ? 3 :
+        ip.startsWith('10.')       ? 2 :
+        ip.startsWith('172.')      ? 1 : 0;
+
+      candidates.push({ ip, score });
+    }
+  }
+
+  if (candidates.length === 0) return '127.0.0.1';
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].ip;
 }
 function getPlatform() {
   if (process.platform === 'win32')  return 'windows';
@@ -249,18 +287,13 @@ function startDiscovery(lanIP) {
   // NICs still receive multicast packets on the right interface.
   udp.bind(MULTICAST_PORT, '0.0.0.0', () => {
     try {
-      udp.addMembership(MULTICAST_ADDR);
-      // TTL 128 matches the mobile side; TTL 8 gets dropped by some home routers.
+      // Pass lanIP to addMembership to pin the group to the real WiFi adapter.
+      // Without this, Node picks the first available interface which may be a
+      // virtual adapter (Hyper-V, Docker, VMware) — meaning real packets from
+      // other devices on the WiFi never arrive.
+      udp.addMembership(MULTICAST_ADDR, lanIP !== '127.0.0.1' ? lanIP : undefined);
       udp.setMulticastTTL(128);
-      // Loopback ON: required for two Swyft instances on the same machine, and on
-      // some Windows WiFi drivers setting this false silently breaks all multicast
-      // receives (not just loopback), which explains why Laptop 2 hears nothing.
       udp.setMulticastLoopback(true);
-      // Pin multicast to the LAN adapter explicitly.
-      // On Windows 11 with Intel AX/BE series WiFi drivers, the OS may route
-      // multicast through the wrong interface (e.g. a virtual VMware/Hyper-V
-      // adapter) when setMulticastInterface is not called. This is the most
-      // common reason a laptop can send UDP but never receives any packets.
       if (lanIP !== '127.0.0.1') {
         udp.setMulticastInterface(lanIP);
       }
@@ -287,11 +320,11 @@ function startDiscovery(lanIP) {
       const peer = JSON.parse(msg.toString());
       if (peer.id === DEVICE_ID)             return;
       if (peer.version !== PROTOCOL_VERSION) return;
-      const isNew = !nearbyPeers.has(peer.id);
-      // Always overwrite the full entry so name/ip changes in later packets are
-      // reflected in the UI immediately — don't just update lastSeen.
+      // Always overwrite the full entry so name/ip changes are reflected immediately.
       nearbyPeers.set(peer.id, { ...peer, lastSeen: Date.now() });
-      if (isNew) broadcastNearbyPeers();
+      // Always broadcast — a socket.io client that connected after the peer
+      // was first discovered would never receive it otherwise.
+      broadcastNearbyPeers();
     } catch (_) {}
   });
 }

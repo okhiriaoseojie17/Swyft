@@ -100,28 +100,32 @@ export class DiscoveryService {
     });
 
     this.socket.bind(
-  MULTICAST_PORT,
-  '0.0.0.0',
-  () => {
-    try {
-      this.socket.addMembership(MULTICAST_ADDR);
+      MULTICAST_PORT,
+      '0.0.0.0',
+      () => {
+        try {
+          // Pass the device's actual IP as the multicast interface.
+          // react-native-udp on Android/iOS requires a specific interface address —
+          // passing undefined or '0.0.0.0' causes addMembership to silently fail
+          // on many devices, which means the socket never receives any packets.
+          this.socket.addMembership(MULTICAST_ADDR, this.myIP);
 
-      if (this.socket.setMulticastTTL) {
-        this.socket.setMulticastTTL(128);
+          if (this.socket.setMulticastTTL) {
+            this.socket.setMulticastTTL(128);
+          }
+
+          if (this.socket.setMulticastLoopback) {
+            this.socket.setMulticastLoopback(true);
+          }
+
+          console.log('[Discovery] multicast ready on', this.myIP);
+        } catch (e) {
+          console.warn('[Discovery] multicast setup:', e);
+        }
+
+        this._startAnnouncing();
       }
-
-      if (this.socket.setMulticastLoopback) {
-        this.socket.setMulticastLoopback(true);
-      }
-
-      console.log('[Discovery] multicast ready');
-    } catch (e) {
-      console.warn('[Discovery] multicast setup:', e);
-    }
-
-    this._startAnnouncing();
-  }
-);
+    );
 
     this.expiryTimer = setInterval(() => {
       const now    = Date.now();
@@ -162,7 +166,7 @@ export class DiscoveryService {
         version:  PROTOCOL_VERSION,
       });
       
-      // 4. Uses polyfilled buffer context safely
+      // Send from the correct interface so recipients see our real LAN IP.
       const buf = Buffer.from(payload, 'utf8');
       this.socket.send(buf, 0, buf.length, MULTICAST_PORT, MULTICAST_ADDR, () => {});
     };

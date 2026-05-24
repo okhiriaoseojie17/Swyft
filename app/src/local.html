@@ -546,8 +546,13 @@
     });
 
     socket.on('file-chunk', ({ chunk }) => {
-      rxBufs.push(chunk);
-      rxSize += chunk.byteLength;
+      // chunk arrives as ArrayBuffer from socket.io binary transport
+      const buf = chunk instanceof ArrayBuffer ? chunk
+                : chunk?.buffer instanceof ArrayBuffer ? chunk.buffer
+                : null;
+      if (!buf) return;
+      rxBufs.push(buf);
+      rxSize += buf.byteLength;
       if (rxMeta?.size > 0) {
         const pct     = Math.round((rxSize / rxMeta.size) * 100);
         const elapsed = (Date.now() - rxStart) / 1000;
@@ -708,14 +713,11 @@
     if (isTransferring)     { showStatus('⚠️ Transfer already in progress', 'error'); return; }
     if (!socket?.connected) { showStatus('⚠️ Not connected to local server', 'error'); return; }
 
-    // ── FIX: use socketId when available (populated via IP match); fall back
-    // to the Swyft UUID which the server can also resolve via peersBySwyftId.
+    // Use socketId (from IP-matched socket peer) when available; otherwise fall
+    // back to the Swyft UUID — the server resolves it via peersBySwyftId.
+    // Never block the send: if neither is available the server will return an
+    // error with a clear message rather than hanging silently.
     const targetSocketId = peer.socketId || peer.id;
-
-    if (!targetSocketId) {
-      showStatus('❌ Device not yet connected — wait a moment and try again', 'error');
-      return;
-    }
 
     showStatus(`Requesting ${peer.name} to accept…`, 'info');
 

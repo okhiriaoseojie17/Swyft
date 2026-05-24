@@ -145,6 +145,11 @@ export class LocalServer extends EventEmitter {
     while (true) {
       if (client.buffer.length < 4) break;
       const msgLen = client.buffer.readUInt32BE(0);
+      // Guard against corrupted frames that would cause the buffer to grow unbounded
+      if (msgLen > 100 * 1024 * 1024) {
+        client.buffer = Buffer.alloc(0);
+        break;
+      }
       if (client.buffer.length < 4 + msgLen) break;
 
       const msgBuf      = client.buffer.slice(4, 4 + msgLen);

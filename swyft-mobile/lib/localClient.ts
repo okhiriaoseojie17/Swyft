@@ -48,8 +48,9 @@ export class LocalClient {
   // This is what the server uses as targetId when routing request-transfer.
   // The desktop's Swyft UUID (activePeer.id) is NOT a valid socket.id and
   // cannot be used for server-side routing.
-  private desktopSocketId: string | null = null;
-  connected               = false;
+  private desktopSocketId:  string | null = null;
+  private connectedFired   = false;
+  connected                = false;
 
   constructor(
     myId:    string,
@@ -85,44 +86,46 @@ export class LocalClient {
     const url = `http://${this.targetIP}:${DESKTOP_SERVER_PORT}`;
     this.ioSocket = io(url, {
       reconnection: false,
-      // Force WebSocket first — avoids the HTTP polling upgrade round-trip that
-      // some Windows firewall rules allow for the initial GET but then drop the
-      // upgrade, causing an immediate disconnect after connect.
+      // Try WebSocket before polling — avoids the HTTP upgrade handshake that
+      // some firewalls allow initially but then drop, causing a silent disconnect.
       transports: ['websocket', 'polling'],
       timeout: 10000,
     });
 
     this.ioSocket.on('connect', () => {
       this.connected = true;
-      // Include swyftId so the desktop server can build its UUID→socketId map.
+      // Announce with our swyftId so the server can build its UUID→socketId map.
+      // onConnected is called only after server-identity arrives (see below) so
+      // desktopSocketId is guaranteed to be set before requestTransfer is called.
       this.ioSocket!.emit('announce', { name: this.myName, swyftId: this.myId }, () => {});
-      this.cb.onConnected();
+    });
+
+    // server-identity carries the server's own socket.id. We use this as the
+    // targetId in request-transfer instead of the Swyft UUID (which the server
+    // has no socket for). Fire onConnected here, not on 'connect', so the caller
+    // never calls requestTransfer before desktopSocketId is populated.
+    this.ioSocket.on('server-identity', ({ socketId }: any) => {
+      this.desktopSocketId = socketId;
+      if (!this.connectedFired) {
+        this.connectedFired = true;
+        this.cb.onConnected();
+      }
     });
 
     this.ioSocket.on('disconnect', () => {
-      this.connected = false;
+      this.connected      = false;
+      this.connectedFired = false;
       this.cb.onDisconnected();
     });
 
+    // connect_error fires on every failed attempt; only surface it once
     this.ioSocket.on('connect_error', (err: any) => {
       this.connected = false;
       this.cb.onError(`Cannot reach desktop at ${this.targetIP}:${DESKTOP_SERVER_PORT} — ${err?.message || 'connection refused'}`);
     });
 
-    // peer-list tells us which socket.ids are connected to the desktop server.
-    // The FIRST entry whose id !== our own socket.id is the desktop's own
-    // socket — but actually the desktop never connects to its own server as a
-    // client, so the peer-list only contains OTHER connected clients.
-    // Instead we use socket.io's built-in `id` on the server socket which the
-    // server sends back in the announce ack.
     this.ioSocket.on('peer-list', (list: any[]) => {
       this.cb.onPeerList(list.filter(p => p.id !== this.ioSocket?.id));
-    });
-
-    // The server sends its own socketId in the announce ack so the phone knows
-    // which socketId to use as targetId when requesting a transfer TO the desktop.
-    this.ioSocket.on('server-identity', ({ socketId }: any) => {
-      this.desktopSocketId = socketId;
     });
 
     this.ioSocket.on('incoming-request', ({ transferId, from, meta }: any) => {

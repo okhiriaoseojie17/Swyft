@@ -118,11 +118,26 @@ export class TransferManager {
         peer.platform === 'linux'
       ) ? 'desktop' : 'mobile';
 
+      // settled prevents calling resolve/reject more than once and ensures
+      // post-connect errors route to onTransferError instead of being swallowed.
+      let settled = false;
+
       this.client = new LocalClient(this.myId, this.myName, peer.ip, peerType, {
-        onConnected:    () => resolve(),
-        onDisconnected: () => {},
-        onError:        (msg) => reject(new Error(msg)),
-        onPeerList:     (_list) => {},   // informational; not needed for transfer routing
+        onConnected: () => {
+          if (!settled) { settled = true; resolve(); }
+        },
+        onDisconnected: () => {
+          // Only surface as an error if a transfer was in progress
+          if (this.currentTid || this._pendingSendFile) {
+            this.cb.onTransferError('Connection lost during transfer');
+          }
+          this._pendingSendFile = null;
+        },
+        onError: (msg) => {
+          if (!settled) { settled = true; reject(new Error(msg)); }
+          else          { this.cb.onTransferError(msg); }
+        },
+        onPeerList: (_list) => {},
 
         onTransferRequest: (tid, from, meta) => {
           this.currentTid = tid;
@@ -164,9 +179,13 @@ export class TransferManager {
 
       this.client.connect();
 
+      // Timeout only rejects if we never connected — safe because settled guards it
       setTimeout(() => {
-        if (!this.client?.connected) reject(new Error(`Cannot reach ${peer.name} at ${peer.ip}`));
-      }, 8000);
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Cannot reach ${peer.name} at ${peer.ip}`));
+        }
+      }, 10000);
     });
   }
 
