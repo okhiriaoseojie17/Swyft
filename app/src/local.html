@@ -1,20 +1,30 @@
 <!DOCTYPE html>
+<!--
+  local.html  (DESKTOP)
+
+  FIXES vs old code:
+  1. SERVER_URL changed: localhost:3001 → localhost:53317 for local HTTP
+  2. File transfer: no more socket.io chunks — uses fetch() POST /prepare-upload
+     then fetch() POST /upload with a streaming body (no base64 in memory)
+  3. Incoming requests arrive via socket.io 'incoming-request-local' event
+     (server emits this on port 3001 after /prepare-upload is called)
+  4. Accept/decline now POSTs to /accept-session or /decline-session
+  5. Firewall warning card: port references updated to 53317
+  6. Peer list: uses 'fingerprint' field instead of 'id'
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Swyft — Local Transfer</title>
-
   <link rel="icon" type="image/png" href="favicon-96x96.png?v=v1" sizes="96x96" />
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=v1" />
   <link rel="shortcut icon" href="favicon.ico?v=v1" />
   <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=v1" />
   <meta name="apple-mobile-web-app-title" content="Swyft" />
   <link rel="manifest" href="site.webmanifest?v=v1" />
-
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-
     :root {
       --green:      #10b981;
       --green-dim:  rgba(16,185,129,0.15);
@@ -29,14 +39,11 @@
       --muted:      #555;
       --faint:      #333;
     }
-
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: #0a0a0a; color: #fff;
       min-height: 100vh; display: flex; flex-direction: column;
     }
-
-    /* ── Header ────────────────────────────────────────────────── */
     .header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 18px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
@@ -53,17 +60,11 @@
       letter-spacing: .5px; text-transform: uppercase;
       background: var(--green-dim); color: var(--green);
     }
-
-    /* ── Body ──────────────────────────────────────────────────── */
     .body { flex: 1; overflow-y: auto; padding: 20px 20px 100px; display: flex; flex-direction: column; gap: 20px; }
-
-    /* ── Section label ─────────────────────────────────────────── */
     .section-label {
       font-size: 11px; font-weight: 700; color: var(--faint);
       text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;
     }
-
-    /* ── This device bar ───────────────────────────────────────── */
     .device-bar {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 12px; padding: 13px 16px;
@@ -77,8 +78,6 @@
     .device-name { font-size: 13px; font-weight: 600; color: #ccc; }
     .device-ip   { font-size: 11px; color: #383838; margin-top: 2px; font-family: monospace; }
     .device-ready { margin-left: auto; font-size: 11px; color: var(--green); }
-
-    /* ── File picker card ──────────────────────────────────────── */
     .card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 10px;
@@ -108,8 +107,6 @@
     .file-info span { font-size: 11px; color: var(--muted); }
     .hint-text { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.6; }
     .hint-text em { color: var(--green); font-style: normal; }
-
-    /* ── Peers section ─────────────────────────────────────────── */
     .peers-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .scan-row { display: flex; align-items: center; gap: 6px; }
     .scan-spinner {
@@ -120,9 +117,7 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .scan-text  { font-size: 11px; color: var(--muted); }
     .peer-count { font-size: 11px; color: var(--green); font-weight: 600; }
-
     .peers-list { display: flex; flex-direction: column; gap: 8px; }
-
     .peer-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 12px; padding: 14px 16px;
@@ -130,15 +125,9 @@
       cursor: pointer; transition: border-color .2s, background .2s, transform .15s;
       position: relative; overflow: hidden;
     }
-    .peer-card::before {
-      content: ''; position: absolute; inset: 0;
-      background: var(--green-low); opacity: 0; transition: opacity .2s;
-    }
     .peer-card:hover { border-color: #2e2e2e; background: #181818; transform: translateY(-1px); }
-    .peer-card:hover::before { opacity: 1; }
     .peer-card:active { transform: scale(.99); }
     .peer-card.connecting { opacity: .5; pointer-events: none; }
-
     .peer-avatar {
       width: 44px; height: 44px; border-radius: 11px;
       background: var(--green-dim);
@@ -150,7 +139,6 @@
     .peer-sub   { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .peer-action { font-size: 12px; font-weight: 700; color: var(--green); flex-shrink: 0; }
     .peer-arrow  { font-size: 18px; color: #2a2a2a; flex-shrink: 0; }
-
     .empty-card {
       background: var(--surface); border: 1px dashed #1e1e1e;
       border-radius: 14px; padding: 32px 20px; text-align: center;
@@ -158,16 +146,12 @@
     .empty-icon  { font-size: 36px; margin-bottom: 12px; }
     .empty-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
     .empty-desc  { font-size: 12px; color: var(--muted); line-height: 1.7; }
-
-    /* ── Note card ─────────────────────────────────────────────── */
     .note-card {
       background: rgba(16,185,129,0.04); border: 1px solid rgba(16,185,129,0.1);
       border-radius: 12px; padding: 16px;
     }
     .note-title { font-size: 12px; font-weight: 700; color: rgba(16,185,129,0.5); margin-bottom: 8px; }
     .note-text  { font-size: 12px; color: #3a3a3a; line-height: 1.7; }
-
-    /* ── Firewall warning card ─────────────────────────────────── */
     .warn-card {
       background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.2);
       border-radius: 12px; padding: 16px; display: none;
@@ -189,8 +173,6 @@
     }
     .warn-fix-btn:hover { background: rgba(245,158,11,0.25); }
     .warn-fix-btn:disabled { opacity: .4; cursor: not-allowed; }
-
-    /* ── Buttons ───────────────────────────────────────────────── */
     .btn {
       width: 100%; padding: 13px; border-radius: 11px; border: none;
       font-size: 14px; font-weight: 600; cursor: pointer;
@@ -203,16 +185,12 @@
     .btn-red     { background: var(--red-dim); border: 1px solid rgba(239,68,68,.25); color: #f87171; }
     .btn-outline { background: transparent; border: 1px solid var(--border2); color: #666; }
     .btn-outline:hover { border-color: #383838; color: #aaa; }
-
-    /* ── Status bar ────────────────────────────────────────────── */
     .status-wrap { padding: 0 20px 20px; flex-shrink: 0; }
     .status { font-size: 13px; padding: 11px 15px; border-radius: 10px; display: none; }
     .status.show    { display: block; }
     .status.success { background: rgba(16,185,129,.1); color: #34d399; border: 1px solid rgba(16,185,129,.2); }
     .status.error   { background: rgba(239,68,68,.1);  color: #f87171; border: 1px solid rgba(239,68,68,.2); }
     .status.info    { background: rgba(255,255,255,.04); color: #666;   border: 1px solid #1e1e1e; }
-
-    /* ── Incoming request overlay ──────────────────────────────── */
     .overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,.85);
       display: flex; align-items: flex-end; z-index: 1000;
@@ -237,8 +215,6 @@
     .sheet-file-size { font-size: 12px; color: var(--muted); margin-top: 3px; }
     .sheet-btns     { display: flex; gap: 10px; }
     .sheet-btns .btn { flex: 1; }
-
-    /* ── Progress overlay ──────────────────────────────────────── */
     .progress-overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,.7);
       display: flex; align-items: flex-end; z-index: 900;
@@ -284,18 +260,13 @@
   </style>
 </head>
 <body>
-
-  <!-- ── Header ──────────────────────────────────────────────────── -->
   <div class="header">
     <button class="back-btn" onclick="goBack()">← Back</button>
     <img src="Swyft_full_logo_colured.png" alt="Swyft" class="header-logo">
     <span class="badge">📡 Local</span>
   </div>
 
-  <!-- ── Body ────────────────────────────────────────────────────── -->
   <div class="body">
-
-    <!-- This device -->
     <div class="device-bar">
       <div class="dot-pulse"></div>
       <div>
@@ -305,7 +276,6 @@
       <span class="device-ready">● Ready</span>
     </div>
 
-    <!-- File picker -->
     <div class="card">
       <div class="section-label">File to Send</div>
       <div class="pick-row">
@@ -319,7 +289,6 @@
       <p class="hint-text" id="sendHint">Pick a file first, then <em>tap a device below</em> to send it</p>
     </div>
 
-    <!-- Nearby devices -->
     <div>
       <div class="peers-header">
         <div class="section-label" style="margin-bottom:0">Nearby Devices</div>
@@ -329,13 +298,9 @@
           <span class="peer-count" id="peerCount">0 found</span>
         </div>
       </div>
-
-      <div class="peers-list" id="peerList">
-        <!-- Populated by JS -->
-      </div>
+      <div class="peers-list" id="peerList"></div>
     </div>
 
-    <!-- How it works note -->
     <div class="note-card">
       <div class="note-title">💡 How it works</div>
       <div class="note-text">
@@ -345,25 +310,20 @@
       </div>
     </div>
 
-    <!-- Firewall / network warning (shown if checks fail) -->
     <div class="warn-card" id="firewallWarn">
       <div class="warn-title">⚠️ Device may be blocked by firewall or network settings</div>
-      <div class="warn-text" id="firewallWarnText">
-        Checking network configuration…
-      </div>
+      <div class="warn-text" id="firewallWarnText">Checking network configuration…</div>
       <button class="warn-fix-btn" id="firewallFixBtn" onclick="applyFirewallFixes()" style="display:none">
         🔧 Apply fixes automatically (requires admin)
       </button>
     </div>
-
   </div>
 
-  <!-- ── Status bar ───────────────────────────────────────────────── -->
   <div class="status-wrap">
     <div class="status" id="pageStatus"></div>
   </div>
 
-  <!-- ── Incoming request overlay ─────────────────────────────────── -->
+  <!-- Incoming request overlay -->
   <div class="overlay" id="requestOverlay">
     <div class="sheet">
       <div class="sheet-handle"></div>
@@ -381,7 +341,7 @@
     </div>
   </div>
 
-  <!-- ── Progress overlay ──────────────────────────────────────────── -->
+  <!-- Progress overlay -->
   <div class="progress-overlay" id="progressOverlay">
     <div class="progress-sheet">
       <div class="prog-handle"></div>
@@ -395,79 +355,66 @@
     </div>
   </div>
 
+  <!--
+    socket.io is ONLY used here for the online signalling path (WebRTC PIN rooms)
+    and to receive 'incoming-request-local' / 'nearby-peers' push events from the
+    backend. All file data travels over plain HTTP fetch() calls to port 53317.
+  -->
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-
   <script>
   // ══════════════════════════════════════════════════════════════
-  // Config
+  // Config — two URLs:
+  //   LOCAL_URL  = HTTP server on 53317  (file transfer)
+  //   SIGNAL_URL = socket.io server on 3001 (push events + WebRTC)
   // ══════════════════════════════════════════════════════════════
-  const SERVER_URL = 'http://localhost:3001';
+  const LOCAL_URL  = 'http://localhost:53317';
+  const SIGNAL_URL = 'http://localhost:3001';
 
-  // ── Identity: fetched from backend so the name/ID in socket.io announce
-  // exactly match what the backend broadcasts over UDP. We MUST wait for this
-  // before calling initSocket() — otherwise the socket connects with the
-  // default 'This Device' name, the backend broadcasts that stale name over
-  // UDP, and phones see the wrong name indefinitely.
   let MY_NAME = 'This Device';
   let MY_ID   = '';
 
   async function loadDeviceIdentity() {
-    // Retry up to 5 times (50 ms apart) in case Electron IPC isn't ready yet.
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        const res  = await fetch('/device-info');
+        const res  = await fetch(`${LOCAL_URL}/device-info`);
         const info = await res.json();
         if (info.name && info.id) {
           MY_NAME = info.name;
           MY_ID   = info.id;
-          // Also persist so the fallback stays consistent across reloads.
           localStorage.setItem('swyftDeviceName', MY_NAME);
           localStorage.setItem('swyftDeviceId',   MY_ID);
           document.getElementById('myDeviceName').textContent = MY_NAME;
-          return; // success
+          return;
         }
       } catch (_) {}
       await new Promise(r => setTimeout(r, 50));
     }
-    // Fallback: use localStorage so the identity stays stable across sessions.
-    MY_ID = localStorage.getItem('swyftDeviceId') || '';
-    if (!MY_ID) {
-      MY_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
-      localStorage.setItem('swyftDeviceId', MY_ID);
-    }
+    MY_ID   = localStorage.getItem('swyftDeviceId')   || (Math.random().toString(36).slice(2) + Date.now().toString(36));
     MY_NAME = localStorage.getItem('swyftDeviceName') || MY_NAME;
+    localStorage.setItem('swyftDeviceId',   MY_ID);
     document.getElementById('myDeviceName').textContent = MY_NAME;
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // State
-  // ══════════════════════════════════════════════════════════════
-  let socket           = null;
-  let mySocketId       = null;
-  let selectedFile     = null;
-  let currentTid       = null;
-  let pendingRequest   = null;
-  let isTransferring   = false;
-  let isCancelled      = false;
-  let fileReader       = null;
+  // ── State ─────────────────────────────────────────────────────
+  let socket         = null;
+  let selectedFile   = null;
+  let isTransferring = false;
+  let isCancelled    = false;
+  let nearbyPeers    = [];    // from UDP discovery (fingerprint-keyed)
+  let pendingSession = null;  // { sessionId, files }
+  let activeSession  = null;  // session we accepted (receiving)
+  let abortCtrl      = null;  // AbortController for in-progress fetch upload
 
-  // Nearby peers from UDP discovery
-  let nearbyPeers = [];   // [{ id (swyftId), name, ip, port, platform }]
-  // Socket-connected peers (have announced to this server)
-  let socketPeers = [];   // [{ id (socketId), name, swyftId, ip }]
-
-  // ══════════════════════════════════════════════════════════════
-  // Helpers
-  // ══════════════════════════════════════════════════════════════
+  // ── Helpers ───────────────────────────────────────────────────
   function fmtSize(b) {
     if (b > 1024**3) return (b/1024**3).toFixed(2)+' GB';
     if (b > 1024**2) return (b/1024**2).toFixed(2)+' MB';
     return (b/1024).toFixed(1)+' KB';
   }
   function escHtml(s) {
-    return String(s).replace(/[&<>"']/g, c =>
-      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    return String(s).replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
   function showStatus(msg, type) {
     const el = document.getElementById('pageStatus');
@@ -475,185 +422,95 @@
     el.className = `status show ${type}`;
     if (type !== 'error') setTimeout(() => el.classList.remove('show'), 4000);
   }
-  function platformIcon(p) {
-    return (p === 'windows' || p === 'mac' || p === 'linux') ? '💻' : '📱';
+  function platformIcon(t) {
+    return (t === 'desktop' || t === 'windows' || t === 'mac' || t === 'linux') ? '💻' : '📱';
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Socket connection
-  // ══════════════════════════════════════════════════════════════
+  // ── Socket.io connection (signal server port 3001) ────────────
   function initSocket() {
-    socket = io(SERVER_URL, { reconnection: true, reconnectionDelay: 2000 });
+    socket = io(SIGNAL_URL, { reconnection: true, reconnectionDelay: 2000 });
 
     socket.on('connect', () => {
-      mySocketId = socket.id;
-      // ── FIX: announce with swyftId so server can build the UUID→socketId map ──
-      // Mobiles send request-transfer with our swyftId (from UDP discovery);
-      // the server resolves that to our current socket.id.
-      socket.emit('announce', { name: MY_NAME, swyftId: MY_ID }, (res) => {
-        if (res?.id) mySocketId = res.id;
-      });
-      fetch('/nearby-peers')
+      // Announce with our swyftId for online-mode peer list
+      socket.emit('announce', { name: MY_NAME, swyftId: MY_ID }, (res) => {});
+
+      // Load initial nearby peers from REST
+      fetch(`${LOCAL_URL}/nearby-peers`)
         .then(r => r.json())
         .then(list => { nearbyPeers = list; renderPeers(); })
         .catch(() => {});
+
       showStatus('✓ Ready — searching for nearby devices', 'success');
     });
 
     socket.on('disconnect', () => showStatus('Disconnected from local server', 'info'));
     socket.on('connect_error', () => showStatus('Cannot reach local server', 'error'));
 
+    // UDP-discovered peers pushed by backend
     socket.on('nearby-peers', (list) => {
       nearbyPeers = list;
       renderPeers();
     });
 
-    // ── FIX: server now includes swyftId + ip in peer objects ───────────
-    socket.on('peer-list', (list) => {
-      socketPeers = list.filter(p => p.id !== mySocketId);
-      renderPeers();
-    });
-
-    // ── Incoming transfer request (we are receiver) ─────────────────────
-    socket.on('incoming-request', ({ transferId, from, meta }) => {
-      pendingRequest = { transferId };
+    // Incoming local transfer request (HTTP /prepare-upload was called by sender)
+    socket.on('incoming-request-local', ({ sessionId, from, files }) => {
+      pendingSession = { sessionId, files };
+      const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
       document.getElementById('sheetFrom').textContent     = 'from ' + from;
-      document.getElementById('sheetFileName').textContent = meta.name;
-      document.getElementById('sheetFileSize').textContent = fmtSize(meta.size);
+      document.getElementById('sheetFileName').textContent = files.map(f => f.fileName).join(', ');
+      document.getElementById('sheetFileSize').textContent = fmtSize(totalSize);
       document.getElementById('requestOverlay').classList.add('visible');
     });
 
-    // ── Transfer accepted (we are sender) ───────────────────────────────
-    socket.on('transfer-response', ({ transferId, accepted, reason }) => {
-      document.querySelectorAll('.peer-card.connecting').forEach(c => c.classList.remove('connecting'));
-      if (transferId !== currentTid) return;
-      if (!accepted) {
-        currentTid = null;
-        showStatus(reason === 'receiver-left' ? '❌ Device went offline' : '❌ Transfer declined', 'error');
-        closeProgress();
-        return;
-      }
-      showStatus('✓ Accepted — sending…', 'success');
-      startSending(transferId, selectedFile);
-    });
-
-    // ── Receive: metadata, chunks, end, cancel ──────────────────────────
-    let rxMeta = null, rxSize = 0, rxStart = 0, rxBufs = [];
-
-    socket.on('file-metadata', ({ metadata }) => {
-      rxMeta = metadata; rxSize = 0; rxStart = Date.now(); rxBufs = [];
-      document.getElementById('progFile').textContent = metadata.name;
-    });
-
-    socket.on('file-chunk', ({ chunk }) => {
-      // chunk arrives as ArrayBuffer from socket.io binary transport
-      const buf = chunk instanceof ArrayBuffer ? chunk
-                : chunk?.buffer instanceof ArrayBuffer ? chunk.buffer
-                : null;
-      if (!buf) return;
-      rxBufs.push(buf);
-      rxSize += buf.byteLength;
-      if (rxMeta?.size > 0) {
-        const pct     = Math.round((rxSize / rxMeta.size) * 100);
-        const elapsed = (Date.now() - rxStart) / 1000;
-        const speed   = elapsed > 0 ? (rxSize/1024/1024)/elapsed : 0;
-        document.getElementById('progFill').style.width = pct + '%';
-        document.getElementById('progStats').textContent =
-          `${fmtSize(rxSize)} / ${fmtSize(rxMeta.size)} @ ${speed.toFixed(2)} MB/s`;
-      }
-    });
-
-    socket.on('file-end', async () => {
-      const blob = new Blob(rxBufs, { type: rxMeta?.mimeType || 'application/octet-stream' });
-      rxBufs = [];
-      document.getElementById('progFill').style.width = '100%';
-      document.getElementById('progTitle').textContent = '✓ Received!';
-      document.getElementById('progStats').textContent = fmtSize(blob.size) + ' received';
+    // Transfer completed (server saved the file, notifies UI)
+    socket.on('transfer-complete-local', ({ fileName, dest }) => {
+      document.getElementById('progFill').style.width      = '100%';
+      document.getElementById('progTitle').textContent     = '✓ Received!';
+      document.getElementById('progStats').textContent     = `Saved to ${dest}`;
       document.getElementById('progCancelBtn').style.display = 'none';
       document.getElementById('progCloseBtn').style.display  = 'block';
-      isTransferring = false; currentTid = null; pendingRequest = null;
-      await buildDownloadUI(blob, rxMeta, document.getElementById('progActions'));
-      showStatus('✓ File received!', 'success');
+      isTransferring = false;
+      showStatus('✓ File received — saved to Downloads', 'success');
     });
 
-    socket.on('file-cancel', () => {
-      showStatus('❌ Sender cancelled', 'error');
-      closeProgress(); pendingRequest = null; currentTid = null;
+    socket.on('transfer-cancelled-local', ({ sessionId }) => {
+      if (activeSession === sessionId) {
+        showStatus('❌ Sender cancelled', 'error');
+        closeProgress();
+        activeSession = null;
+      }
     });
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Peer rendering
-  // ══════════════════════════════════════════════════════════════
-  // ── FIX: deduplicate UDP peers vs socket peers using IP address ──────────
-  // Old code compared nearbyPeers[].id (Swyft UUID) vs socketPeers[].id
-  // (socket.id) — these are always different, so every mobile showed up twice:
-  //   card 1 → UDP entry (socketId=null)  → send fails with "peer not found"
-  //   card 2 → socket entry (socketId=ok) → send works
-  //
-  // New approach: match by IP. When a match is found, store the socketId on
-  // the merged entry. sendToPeer() then uses that socketId as the targetId,
-  // which the server can route correctly.
+  // ── Render peer list ──────────────────────────────────────────
   function renderPeers() {
     const container = document.getElementById('peerList');
     const countEl   = document.getElementById('peerCount');
+    countEl.textContent = nearbyPeers.length + ' found';
 
-    const merged    = [];
-    const usedSocketIds = new Set();
-
-    for (const p of nearbyPeers) {
-      // Find the matching socket peer by IP
-      const socketPeer = socketPeers.find(sp => sp.ip && sp.ip === p.ip);
-      merged.push({
-        id:       p.id,                           // Swyft UUID (for display/keying)
-        name:     p.name,
-        sub:      platformIcon(p.platform) + '  ' + p.platform + ' · ' + p.ip,
-        icon:     platformIcon(p.platform),
-        socketId: socketPeer ? socketPeer.id : null, // populated once they connect
-        ip:       p.ip,
-      });
-      if (socketPeer) usedSocketIds.add(socketPeer.id);
-    }
-
-    // Add socket-only peers (connected but not yet visible via UDP, e.g. other tabs)
-    for (const p of socketPeers) {
-      if (!usedSocketIds.has(p.id)) {
-        merged.push({
-          id:       p.id,
-          name:     p.name,
-          sub:      '💻  connected',
-          icon:     '💻',
-          socketId: p.id,
-          ip:       p.ip || null,
-        });
-      }
-    }
-
-    countEl.textContent = merged.length + ' found';
-
-    if (merged.length === 0) {
+    if (nearbyPeers.length === 0) {
       container.innerHTML = `
         <div class="empty-card">
           <div class="empty-icon">📡</div>
           <div class="empty-title">No devices found yet</div>
           <div class="empty-desc">
             Make sure the other device has Swyft open and is on the same WiFi network.<br><br>
-            Phones and other desktops appear here automatically — no setup needed.
+            Phones and other desktops appear here automatically.
           </div>
         </div>`;
       return;
     }
 
     container.innerHTML = '';
-    for (const p of merged) {
+    for (const p of nearbyPeers) {
       const card = document.createElement('div');
       card.className  = 'peer-card';
-      card.dataset.id = p.id;
+      card.dataset.fp = p.fingerprint;
       card.innerHTML  = `
-        <div class="peer-avatar">${p.icon}</div>
+        <div class="peer-avatar">${platformIcon(p.deviceType)}</div>
         <div class="peer-info">
-          <div class="peer-name">${escHtml(p.name)}</div>
-          <div class="peer-sub">${escHtml(p.sub)}</div>
+          <div class="peer-name">${escHtml(p.alias)}</div>
+          <div class="peer-sub">${escHtml(p.deviceType)} · ${escHtml(p.ip)}</div>
         </div>
         ${selectedFile
           ? `<span class="peer-action">↑ Send</span>`
@@ -663,9 +520,7 @@
     }
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // File selection
-  // ══════════════════════════════════════════════════════════════
+  // ── File selection ────────────────────────────────────────────
   function handleFileSelect(isFolder) {
     const inp   = document.getElementById(isFolder ? 'folderInput' : 'fileInput');
     const files = Array.from(inp.files);
@@ -705,119 +560,156 @@
     renderPeers();
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Send flow
-  // ══════════════════════════════════════════════════════════════
-  function sendToPeer(peer) {
+  // ── Send flow — HTTP REST ─────────────────────────────────────
+  async function sendToPeer(peer) {
     if (!selectedFile)      { showStatus('⚠️ Pick a file first', 'error'); return; }
     if (isTransferring)     { showStatus('⚠️ Transfer already in progress', 'error'); return; }
-    if (!socket?.connected) { showStatus('⚠️ Not connected to local server', 'error'); return; }
 
-    // Use socketId (from IP-matched socket peer) when available; otherwise fall
-    // back to the Swyft UUID — the server resolves it via peersBySwyftId.
-    // Never block the send: if neither is available the server will return an
-    // error with a clear message rather than hanging silently.
-    const targetSocketId = peer.socketId || peer.id;
-
-    showStatus(`Requesting ${peer.name} to accept…`, 'info');
-
-    const card = document.querySelector(`.peer-card[data-id="${peer.id}"]`);
+    const card = document.querySelector(`.peer-card[data-fp="${peer.fingerprint}"]`);
     if (card) card.classList.add('connecting');
 
-    const meta = {
-      name:     selectedFile.name,
-      size:     selectedFile.size,
-      mimeType: selectedFile.type || 'application/octet-stream',
+    showStatus(`Requesting ${peer.alias} to accept…`, 'info');
+
+    const fileId  = Math.random().toString(36).slice(2);
+    const prepareBody = {
+      info: {
+        alias:       MY_NAME,
+        version:     '2.0',
+        deviceModel: navigator.platform,
+        deviceType:  'desktop',
+        fingerprint: MY_ID,
+        port:        53317,
+        protocol:    'http',
+        download:    true,
+      },
+      files: {
+        [fileId]: {
+          id:       fileId,
+          fileName: selectedFile.name,
+          size:     selectedFile.size,
+          fileType: selectedFile.type || 'application/octet-stream',
+        },
+      },
     };
 
-    socket.emit('request-transfer', { targetId: targetSocketId, meta }, (res) => {
-      if (!res.success) {
-        showStatus('❌ ' + res.message, 'error');
+    let sessionRes;
+    try {
+      const ctrl  = new AbortController();
+      setTimeout(() => ctrl.abort(), 40000);
+      // POST to the PEER's HTTP server on port 53317
+      const peerBaseUrl = `http://${peer.ip}:${peer.port || 53317}`;
+      const res = await fetch(`${peerBaseUrl}/prepare-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(prepareBody),
+        signal:  ctrl.signal,
+      });
+      if (res.status === 403) {
+        showStatus('❌ Transfer declined', 'error');
         if (card) card.classList.remove('connecting');
         return;
       }
-      currentTid = res.transferId;
-      openProgress('Sending', selectedFile.name);
-    });
-  }
-
-  function startSending(transferId, file) {
-    isTransferring = true; isCancelled = false;
-    const CHUNK = 256 * 1024;
-    let offset  = 0;
-    const t0    = Date.now();
-
-    socket.emit('file-metadata', {
-      transferId,
-      metadata: { name: file.name, size: file.size, mimeType: file.type || 'application/octet-stream' },
-    });
-
-    fileReader = new FileReader();
-
-    function sendNext() {
-      if (isCancelled) return;
-      if (offset >= file.size) {
-        socket.emit('file-end', { transferId });
-        isTransferring = false; currentTid = null;
-        document.getElementById('progTitle').textContent     = '✓ Sent!';
-        document.getElementById('progStats').textContent     = fmtSize(file.size) + ' transferred';
-        document.getElementById('progCancelBtn').style.display = 'none';
-        document.getElementById('progCloseBtn').style.display  = 'block';
-        showStatus('✓ File sent!', 'success');
-        return;
-      }
-      fileReader.readAsArrayBuffer(file.slice(offset, offset + CHUNK));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      sessionRes = await res.json();
+    } catch (err) {
+      showStatus('❌ Cannot reach ' + peer.alias + ': ' + err.message, 'error');
+      if (card) card.classList.remove('connecting');
+      return;
     }
 
-    fileReader.onload = e => {
-      if (isCancelled) return;
-      const chunk = e.target.result;
-      socket.emit('file-chunk', { transferId, chunk });
-      offset += chunk.byteLength;
-      const pct     = Math.round((offset / file.size) * 100);
-      const elapsed = (Date.now() - t0) / 1000;
-      const speed   = elapsed > 0 ? (offset/1024/1024)/elapsed : 0;
-      document.getElementById('progFill').style.width = pct + '%';
-      document.getElementById('progStats').textContent =
-        `${fmtSize(offset)} / ${fmtSize(file.size)} @ ${speed.toFixed(2)} MB/s`;
-      setTimeout(sendNext, 0);
-    };
+    if (card) card.classList.remove('connecting');
 
-    fileReader.onerror = () => {
+    const { sessionId, files: tokens } = sessionRes;
+    const token      = tokens[fileId];
+    const peerBaseUrl = `http://${peer.ip}:${peer.port || 53317}`;
+
+    openProgress('Sending', selectedFile.name);
+    isTransferring = true; isCancelled = false;
+
+    // Upload using fetch with streaming body
+    try {
+      abortCtrl = new AbortController();
+      const t0  = Date.now();
+
+      // Track progress using a TransformStream wrapper
+      let uploaded = 0;
+      const total  = selectedFile.size;
+      const stream = selectedFile.stream().pipeThrough(new TransformStream({
+        transform(chunk, controller) {
+          uploaded += chunk.byteLength;
+          const pct     = Math.round((uploaded / total) * 100);
+          const elapsed = (Date.now() - t0) / 1000 || 0.001;
+          const speed   = (uploaded / 1024 / 1024) / elapsed;
+          document.getElementById('progFill').style.width = pct + '%';
+          document.getElementById('progStats').textContent =
+            `${fmtSize(uploaded)} / ${fmtSize(total)} @ ${speed.toFixed(2)} MB/s`;
+          controller.enqueue(chunk);
+        },
+      }));
+
+      const uploadRes = await fetch(
+        `${peerBaseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
+        {
+          method:  'POST',
+          headers: {
+            'Content-Type':  selectedFile.type || 'application/octet-stream',
+            'X-File-Name':   encodeURIComponent(selectedFile.name),
+          },
+          body:    stream,
+          signal:  abortCtrl.signal,
+          // duplex required for streaming body in Chrome
+          duplex: 'half',
+        }
+      );
+
+      if (!uploadRes.ok) throw new Error(`Upload failed: HTTP ${uploadRes.status}`);
+
       isTransferring = false;
-      showStatus('❌ File read error', 'error');
+      document.getElementById('progTitle').textContent     = '✓ Sent!';
+      document.getElementById('progStats').textContent     = fmtSize(total) + ' transferred';
+      document.getElementById('progCancelBtn').style.display = 'none';
+      document.getElementById('progCloseBtn').style.display  = 'block';
+      showStatus('✓ File sent!', 'success');
+    } catch (err) {
+      isTransferring = false;
+      if (!isCancelled) showStatus('❌ Send error: ' + err.message, 'error');
       closeProgress();
-    };
-    sendNext();
+    }
   }
 
   function cancelTransfer() {
-    if (!currentTid) { closeProgress(); return; }
     if (!confirm('Cancel this transfer?')) return;
-    isCancelled = true; isTransferring = false;
-    if (fileReader?.readyState === FileReader.LOADING) fileReader.abort();
-    socket.emit('file-cancel', { transferId: currentTid });
-    currentTid = null;
+    isCancelled    = true;
+    isTransferring = false;
+    abortCtrl?.abort();
     showStatus('Transfer cancelled', 'info');
     closeProgress();
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Receive: accept / decline
-  // ══════════════════════════════════════════════════════════════
-  function respondToRequest(accepted) {
+  // ── Receive: accept / decline ─────────────────────────────────
+  async function respondToRequest(accepted) {
     document.getElementById('requestOverlay').classList.remove('visible');
-    if (!pendingRequest) return;
-    const { transferId } = pendingRequest;
-    socket.emit('transfer-response', { transferId, accepted });
-    if (!accepted) { pendingRequest = null; return; }
-    openProgress('Receiving', document.getElementById('sheetFileName').textContent);
-    currentTid = transferId; isTransferring = true;
+    if (!pendingSession) return;
+
+    const { sessionId } = pendingSession;
+
+    // Tell the backend the user's decision
+    await fetch(`${LOCAL_URL}/${accepted ? 'accept' : 'decline'}-session`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ sessionId }),
+    });
+
+    if (accepted) {
+      activeSession = sessionId;
+      isTransferring = true;
+      openProgress('Receiving', pendingSession.files.map(f => f.fileName).join(', '));
+    }
+
+    pendingSession = null;
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Progress overlay
-  // ══════════════════════════════════════════════════════════════
+  // ── Progress overlay ──────────────────────────────────────────
   function openProgress(verb, filename) {
     document.getElementById('progTitle').textContent       = verb + '…';
     document.getElementById('progFile').textContent        = filename;
@@ -828,107 +720,49 @@
     document.getElementById('progCloseBtn').style.display  = 'none';
     document.getElementById('progressOverlay').classList.add('visible');
   }
+
   function closeProgress() {
     document.getElementById('progressOverlay').classList.remove('visible');
     isTransferring = false;
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Download UI
-  // ══════════════════════════════════════════════════════════════
-  async function buildDownloadUI(blob, metadata, container) {
-    container.innerHTML = '';
-    if (metadata?.name?.endsWith('.zip')) {
-      const dlA = document.createElement('a');
-      dlA.href = URL.createObjectURL(blob); dlA.download = metadata.name;
-      dlA.textContent = '📦 Download as ZIP'; dlA.className = 'dl-btn';
-      container.appendChild(dlA);
-
-      const exBtn = document.createElement('button');
-      exBtn.textContent = '📂 View / Extract Files';
-      exBtn.className   = 'btn btn-outline'; exBtn.style.marginTop = '8px';
-      exBtn.onclick = async () => {
-        exBtn.disabled = true; exBtn.textContent = 'Extracting…';
-        await extractZip(blob, container); exBtn.style.display = 'none';
-      };
-      container.appendChild(exBtn);
-    } else {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = metadata?.name || 'file';
-      a.textContent = `⬇️ Download ${metadata?.name || 'file'}`; a.className = 'dl-btn';
-      container.appendChild(a);
-    }
-  }
-
-  async function extractZip(blob, container) {
-    try {
-      const zip  = await JSZip.loadAsync(blob);
-      const list = document.createElement('div'); list.className = 'extracted-list';
-      const hdr  = document.createElement('h4'); hdr.textContent = 'Files:'; list.appendChild(hdr);
-      for (const [path, file] of Object.entries(zip.files)) {
-        if (file.dir) continue;
-        const content = await file.async('blob');
-        const row = document.createElement('div'); row.className = 'file-row';
-        const a   = document.createElement('a');
-        a.href = URL.createObjectURL(content); a.download = path.replace(/\//g,'_');
-        a.textContent = '📄 ' + path; a.className = 'file-link';
-        row.appendChild(a); list.appendChild(row);
-      }
-      container.appendChild(list);
-    } catch(err) { alert('Extraction error: ' + err.message); }
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // Network / Firewall diagnostics
-  // ══════════════════════════════════════════════════════════════
-
+  // ── Network / Firewall diagnostics ────────────────────────────
   async function runNetworkCheck() {
     try {
-      const res  = await fetch('/network-check');
+      const res  = await fetch(`${SIGNAL_URL}/network-check`);
       const info = await res.json();
-
       const problems = [];
-      const isWindows = info.os === 'win32';
 
       if (info.networkProfile === 'Public') {
         problems.push(
           '<strong>WiFi network profile is Public.</strong> ' +
-          'Windows blocks multicast (device discovery) on Public networks. ' +
-          'Change it to <strong>Private</strong>: ' +
-          'Settings → Network → WiFi → [your network] → Properties → Private. ' +
-          (window.swyftApp?.openNetworkSettings
-            ? '<a href="#" onclick="window.swyftApp.openNetworkSettings();return false;" ' +
-              'style="color:var(--amber)">Open network settings →</a>'
-            : '')
+          'Windows blocks multicast on Public networks. Change it to <strong>Private</strong>: ' +
+          'Settings → Network → WiFi → [your network] → Properties → Private.'
         );
       }
       if (info.udpBlocked) {
         problems.push(
-          '<strong>Firewall is blocking UDP 7354</strong> (device discovery). ' +
-          'Other devices cannot find this laptop until this is fixed.'
+          '<strong>Firewall is blocking UDP 53317</strong> (device discovery). ' +
+          'Other devices cannot find this laptop.'
         );
       }
       if (info.tcpBlocked) {
         problems.push(
-          '<strong>Firewall is blocking TCP 3001</strong> (file transfer). ' +
-          'Phones and other desktops cannot connect to send files here.'
+          '<strong>Firewall is blocking TCP 53317</strong> (file transfer). ' +
+          'Phones and desktops cannot connect to send files here.'
         );
       }
       if (info.multicastProfileBlocked) {
         problems.push(
           '<strong>Windows Firewall profile is blocking multicast responses.</strong> ' +
-          'This is a Windows 11 setting separate from per-port rules — it prevents ' +
-          'this device from receiving discovery packets even when firewall rules exist. ' +
           'Click "Apply fixes" to correct it automatically.'
         );
       }
       if (info.virtualAdapterConflict) {
         problems.push(
           '<strong>A virtual network adapter (Hyper-V / VMware / VirtualBox) is active.</strong> ' +
-          'Windows may route multicast traffic through the virtual adapter instead of ' +
-          'your WiFi adapter, so discovery packets from real devices never arrive. ' +
-          'Disable the virtual adapter in Device Manager if discovery is unreliable: ' +
-          'Device Manager → Network Adapters → right-click the virtual adapter → Disable.'
+          'Windows may route multicast through the virtual adapter instead of your WiFi. ' +
+          'Disable it in Device Manager if discovery is unreliable.'
         );
       }
 
@@ -940,13 +774,9 @@
 
       textEl.innerHTML = problems.map(p => `<p style="margin-bottom:8px">${p}</p>`).join('');
       card.classList.add('show');
-
-      // Show auto-fix button for anything the backend can fix automatically
-      const autoFixable = isWindows && (info.udpBlocked || info.tcpBlocked || info.multicastProfileBlocked);
+      const autoFixable = info.os === 'win32' && (info.udpBlocked || info.tcpBlocked || info.multicastProfileBlocked);
       fixBtn.style.display = autoFixable ? 'block' : 'none';
-    } catch (_) {
-      // /network-check not available (older build) — hide the card silently
-    }
+    } catch (_) {}
   }
 
   async function applyFirewallFixes() {
@@ -954,13 +784,12 @@
     btn.disabled    = true;
     btn.textContent = '⏳ Applying firewall rules…';
     try {
-      const res  = await fetch('/apply-firewall-fixes', { method: 'POST' });
+      const res  = await fetch(`${SIGNAL_URL}/apply-firewall-fixes`, { method: 'POST' });
       const info = await res.json();
       if (info.success) {
         btn.textContent = '✓ Done — re-checking…';
         await new Promise(r => setTimeout(r, 900));
         await runNetworkCheck();
-        // If card is now hidden the fixes worked
         const card = document.getElementById('firewallWarn');
         if (!card.classList.contains('show')) {
           showStatus('✓ Firewall rules applied — discovery should work now', 'success');
@@ -969,9 +798,9 @@
         btn.textContent = '❌ Failed — try running as Administrator';
         btn.disabled    = false;
         document.getElementById('firewallWarnText').innerHTML +=
-          '<p style="margin-top:8px;color:#666">Run these in an elevated Command Prompt or PowerShell:<br>' +
-          '<code>netsh advfirewall firewall add rule name="Swyft Discovery" dir=in action=allow protocol=UDP localport=7354</code>' +
-          '<code>netsh advfirewall firewall add rule name="Swyft Server" dir=in action=allow protocol=TCP localport=3001</code>' +
+          '<p style="margin-top:8px;color:#666">Run in an elevated PowerShell:<br>' +
+          '<code>netsh advfirewall firewall add rule name="Swyft Discovery" dir=in action=allow protocol=UDP localport=53317</code>' +
+          '<code>netsh advfirewall firewall add rule name="Swyft Server" dir=in action=allow protocol=TCP localport=53317</code>' +
           '<code>Set-NetFirewallProfile -Profile Domain,Public,Private -AllowUnicastResponseToMulticast True</code></p>';
       }
     } catch (_) {
@@ -980,28 +809,17 @@
     }
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // Init
-  // ══════════════════════════════════════════════════════════════
-  // IMPORTANT: loadDeviceIdentity() MUST complete before initSocket().
-  // If initSocket() runs first the socket.io announce fires with MY_NAME =
-  // 'This Device' and MY_ID = '', and the backend broadcasts that name over
-  // UDP for ~6 s before the correct identity arrives — causing phones to
-  // display the wrong device name.
+  // ── Init ──────────────────────────────────────────────────────
   loadDeviceIdentity().then(() => {
     initSocket();
     if (window.swyftApp?.getLocalIP) {
       window.swyftApp.getLocalIP().then(ip => {
-        document.getElementById('myDeviceIP').textContent = ip + ':3001';
+        document.getElementById('myDeviceIP').textContent = ip + ':53317';
       });
     }
-    // Run firewall/network check after socket is up (non-blocking)
     runNetworkCheck();
   });
 
-  // ══════════════════════════════════════════════════════════════
-  // Back
-  // ══════════════════════════════════════════════════════════════
   function goBack() {
     if (isTransferring) { showStatus('❌ Transfer in progress — cancel first', 'error'); return; }
     try { if (socket) socket.disconnect(); } catch(_) {}
