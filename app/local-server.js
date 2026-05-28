@@ -458,15 +458,20 @@ function startDiscovery() {
     console.log('[Discovery] broadcasting as', DEVICE_NAME, 'on', MULTICAST_ADDR + ':' + MULTICAST_PORT);
   });
 
-  udp.on('message', (msg) => {
-    try {
-      const peer = JSON.parse(msg.toString());
-      if (peer.fingerprint === DEVICE_ID)  return;   // ignore self
-      if (peer.version     !== PROTOCOL_VERSION) return;
-      nearbyPeers.set(peer.fingerprint, { ...peer, lastSeen: Date.now() });
-      io.emit('nearby-peers', Array.from(nearbyPeers.values()));
-    } catch (_) {}
-  });
+ udp.on('message', (msg, rinfo) => {
+  try {
+    const peer = JSON.parse(msg.toString());
+    if (peer.fingerprint === DEVICE_ID)  return;
+    if (peer.version !== PROTOCOL_VERSION) return;
+    nearbyPeers.set(peer.fingerprint, {
+      ...peer,
+      ip:       rinfo.address,          // ← THIS is the real fix
+      lastSeen: Date.now(),
+      baseUrl:  `http://${rinfo.address}:${peer.port}`,
+    });
+    io.emit('nearby-peers', Array.from(nearbyPeers.values()));
+  } catch (_) {}
+});
 }
 
 // ─── Network / firewall diagnostics (Windows) ────────────────────────────────

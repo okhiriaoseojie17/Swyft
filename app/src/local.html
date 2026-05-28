@@ -510,7 +510,7 @@
         <div class="peer-avatar">${platformIcon(p.deviceType)}</div>
         <div class="peer-info">
           <div class="peer-name">${escHtml(p.alias)}</div>
-          <div class="peer-sub">${escHtml(p.deviceType)} · ${escHtml(p.ip)}</div>
+          <div class="peer-sub">${escHtml(p.deviceType)} · ${escHtml(p.ip || 'unknown ip')}</div>
         </div>
         ${selectedFile
           ? `<span class="peer-action">↑ Send</span>`
@@ -597,7 +597,7 @@
       const ctrl  = new AbortController();
       setTimeout(() => ctrl.abort(), 40000);
       // POST to the PEER's HTTP server on port 53317
-      const peerBaseUrl = `http://${peer.ip}:${peer.port || 53317}`;
+      const peerBaseUrl = peer.baseUrl || `http://${peer.ip}:${peer.port || 53317}`;
       const res = await fetch(`${peerBaseUrl}/prepare-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -621,7 +621,7 @@
 
     const { sessionId, files: tokens } = sessionRes;
     const token      = tokens[fileId];
-    const peerBaseUrl = `http://${peer.ip}:${peer.port || 53317}`;
+    const peerBaseUrl = peer.baseUrl || `http://${peer.ip}:${peer.port || 53317}`;
 
     openProgress('Sending', selectedFile.name);
     isTransferring = true; isCancelled = false;

@@ -1,10 +1,13 @@
 /**
- * app/local.tsx
+ * app/local.tsx  (MOBILE)
  *
  * Local WiFi transfer screen.
- * - Auto-discovers nearby Swyft devices (phones + desktop) via UDP multicast
- * - Both sides can send and receive — no "host/join" distinction
- * - Works phone↔phone and phone↔desktop fully offline
+ *
+ * CHANGES vs old code:
+ *  1. Uses updated TransferManager API (sendFiles, respondToTransfer with sessionId)
+ *  2. No more peerType desktop/mobile branching in UI
+ *  3. TransferRequest now carries sessionId (not transferId)
+ *  4. Progress and completion callbacks unchanged — UI is mostly the same
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -16,48 +19,44 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useRouter } from 'expo-router';
-
-import SwyftHeader    from '@/components/SwyftHeader';
-import SwyftButton    from '@/components/SwyftButton';
-import StatusBar      from '@/components/StatusBar';
-import ProgressSheet  from '@/components/ProgressSheet';
+import SwyftHeader   from '@/components/SwyftHeader';
+import SwyftButton   from '@/components/SwyftButton';
+import StatusBar     from '@/components/StatusBar';
+import ProgressSheet from '@/components/ProgressSheet';
 import { colors, font, radius } from '@/lib/theme';
 import { fmtSize, zipFiles, extractZip } from '@/lib/zip';
-import { SwyftPeer }  from '@/lib/discovery';
+import { SwyftPeer } from '@/lib/discovery';
 import { TransferManager, TMCallbacks } from '@/lib/transferManager';
 import { TransferRequest } from '@/lib/localServer';
 
 type StatusType = 'success' | 'error' | 'info' | null;
 
 const PLATFORM_ICON: Record<string, string> = {
-  android: '📱', ios: '📱', windows: '💻', mac: '💻', linux: '💻',
+  android: '📱', ios: '📱', windows: '💻', mac: '💻', linux: '💻', desktop: '💻',
 };
 
 export default function LocalScreen() {
   const router = useRouter();
 
   // ── State ─────────────────────────────────────────────────────────────────
-  const [peers,       setPeers]      = useState<SwyftPeer[]>([]);
-  const [myName,      setMyName]     = useState('This Device');
-  const [myIP,        setMyIP]       = useState('');
-  const [selectedFile, setFile]      = useState<{ uri: string; name: string; size: number } | null>(null);
-  const [connecting,  setConnecting] = useState<string | null>(null);  // peer id being connected
-
-  const [progVisible, setProgVis]   = useState(false);
-  const [progVerb,    setProgVerb]  = useState<'Sending' | 'Receiving'>('Sending');
-  const [progFile,    setProgFile]  = useState('');
-  const [progPct,     setProgPct]   = useState(0);
-  const [progStats,   setProgStats] = useState('');
-  const [progDone,    setProgDone]  = useState(false);
-  const [savedUri,    setSavedUri]  = useState<string | null>(null);
-  const [savedName,   setSavedName] = useState('');
-  const [savedIsZip,  setSavedIsZip] = useState(false);
-
-  const [reqVisible,  setReqVisible] = useState(false);
-  const [reqData,     setReqData]    = useState<TransferRequest | null>(null);
-
-  const [statusMsg,   setStatusMsg]  = useState('');
-  const [statusType,  setStatusType] = useState<StatusType>(null);
+  const [peers,        setPeers]      = useState<SwyftPeer[]>([]);
+  const [myName,       setMyName]     = useState('This Device');
+  const [myIP,         setMyIP]       = useState('');
+  const [selectedFiles, setFiles]     = useState<{ uri: string; name: string; size: number }[] | null>(null);
+  const [sending,      setSending]    = useState<string | null>(null);  // peer fingerprint
+  const [progVisible,  setProgVis]    = useState(false);
+  const [progVerb,     setProgVerb]   = useState<'Sending' | 'Receiving'>('Sending');
+  const [progFile,     setProgFile]   = useState('');
+  const [progPct,      setProgPct]    = useState(0);
+  const [progStats,    setProgStats]  = useState('');
+  const [progDone,     setProgDone]   = useState(false);
+  const [savedUri,     setSavedUri]   = useState<string | null>(null);
+  const [savedName,    setSavedName]  = useState('');
+  const [savedIsZip,   setSavedIsZip] = useState(false);
+  const [reqVisible,   setReqVisible] = useState(false);
+  const [reqData,      setReqData]    = useState<TransferRequest | null>(null);
+  const [statusMsg,    setStatusMsg]  = useState('');
+  const [statusType,   setStatusType] = useState<StatusType>(null);
 
   const tmRef = useRef<TransferManager | null>(null);
 
@@ -68,34 +67,37 @@ export default function LocalScreen() {
   // ── Init TransferManager ──────────────────────────────────────────────────
   useEffect(() => {
     const callbacks: TMCallbacks = {
-      onPeersChanged: (p) => {
-        setPeers(p);
-      },
+      onPeersChanged: (p) => setPeers(p),
+
       onIncomingRequest: (req) => {
         setReqData(req);
         setReqVisible(true);
       },
+
       onTransferProgress: (pct, speed, sent, total) => {
         setProgPct(pct);
         setProgStats(`${fmtSize(sent)} / ${fmtSize(total)} @ ${speed.toFixed(2)} MB/s`);
       },
+
       onTransferComplete: (fileName, uri) => {
         setProgDone(true);
-        setProgStats(fmtSize(0) + ' received');
         setSavedUri(uri);
         setSavedName(fileName);
         setSavedIsZip(fileName.endsWith('.zip'));
         showStatus('✓ File received!', 'success');
       },
+
       onTransferError: (msg) => {
         showStatus('❌ ' + msg, 'error');
         setProgVis(false);
-        setConnecting(null);
+        setSending(null);
       },
+
       onRemoteCancel: () => {
         showStatus('❌ Transfer cancelled by other device', 'error');
         setProgVis(false);
       },
+
       onSendComplete: () => {
         setProgDone(true);
         showStatus('✓ File sent!', 'success');
@@ -106,14 +108,15 @@ export default function LocalScreen() {
     tmRef.current = tm;
 
     tm.start().then(() => {
-      setMyName(tm.getMyName());
-      setMyIP(tm.getMyIP());
-      showStatus('✓ Searching for nearby devices…', 'info');
+      setMyName(tm.getAlias());
+      setMyIP(tm.getIP());
+       Alert.alert('Server', `HTTP server started on ${tm.getIP()}:53317`);
+  showStatus('✓ Searching for nearby devices…', 'info');
     }).catch(err => {
+      Alert.alert('Server Error', err.message);
       showStatus('⚠️ Could not start local server: ' + err.message, 'error');
     });
 
-    // Pause discovery when app is backgrounded, resume on foreground
     const sub = AppState.addEventListener('change', state => {
       if (state === 'active') {
         tm.start().catch(() => {});
@@ -126,7 +129,7 @@ export default function LocalScreen() {
     };
   }, []);
 
-  // ── Pick file ─────────────────────────────────────────────────────────────
+  // ── Pick file(s) ──────────────────────────────────────────────────────────
   async function pickFile() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -134,8 +137,9 @@ export default function LocalScreen() {
       });
       if (result.canceled) return;
       const assets = result.assets;
+
       if (assets.length === 1) {
-        setFile({ uri: assets[0].uri, name: assets[0].name, size: assets[0].size || 0 });
+        setFiles([{ uri: assets[0].uri, name: assets[0].name, size: assets[0].size || 0 }]);
         showStatus(`✓ Ready: ${assets[0].name}`, 'success');
       } else {
         showStatus('Zipping ' + assets.length + ' files…', 'info');
@@ -143,9 +147,11 @@ export default function LocalScreen() {
         const tmpUri = FileSystem.cacheDirectory + name;
         const arr = new Uint8Array(buffer);
         let b64 = ''; arr.forEach(b => b64 += String.fromCharCode(b));
-        await FileSystem.writeAsStringAsync(tmpUri, btoa(b64), { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(tmpUri, btoa(b64), {
+          encoding: FileSystem.EncodingType.Base64,
+        });
         const info = await FileSystem.getInfoAsync(tmpUri);
-        setFile({ uri: tmpUri, name, size: (info as any).size || 0 });
+        setFiles([{ uri: tmpUri, name, size: (info as any).size || 0 }]);
         showStatus('✓ ZIP ready — tap a device to send', 'success');
       }
     } catch (err: any) {
@@ -153,30 +159,28 @@ export default function LocalScreen() {
     }
   }
 
-  // ── Tap a peer → connect + send ───────────────────────────────────────────
+  // ── Tap a peer → send ─────────────────────────────────────────────────────
   async function handlePeerTap(peer: SwyftPeer) {
-    if (!selectedFile) {
+    if (!selectedFiles) {
       showStatus('⚠️ Pick a file first, then tap a device', 'error'); return;
     }
-    if (connecting) return;
+    if (sending) return;
 
-    setConnecting(peer.id);
-    showStatus(`Connecting to ${peer.name}…`, 'info');
+    setSending(peer.fingerprint);
+    showStatus(`Sending to ${peer.alias}…`, 'info');
+
+    setProgVerb('Sending');
+    setProgFile(selectedFiles.map(f => f.name).join(', '));
+    setProgPct(0); setProgStats('Starting…'); setProgDone(false);
+    setProgVis(true);
 
     try {
-      await tmRef.current!.connectToPeer(peer);
-      showStatus(`✓ Connected — requesting ${peer.name} to accept…`, 'success');
-
-      setProgVerb('Sending');
-      setProgFile(selectedFile.name);
-      setProgPct(0); setProgStats('Starting…'); setProgDone(false);
-      setProgVis(true);
-
-      await tmRef.current!.sendFile(selectedFile);
+      await tmRef.current!.sendFiles(peer, selectedFiles);
     } catch (err: any) {
       showStatus('❌ ' + err.message, 'error');
+      setProgVis(false);
     } finally {
-      setConnecting(null);
+      setSending(null);
     }
   }
 
@@ -184,17 +188,19 @@ export default function LocalScreen() {
   function respondToRequest(accepted: boolean) {
     setReqVisible(false);
     if (!reqData) return;
-    tmRef.current?.respondToTransfer(accepted);
+
+    tmRef.current?.respondToTransfer(reqData.sessionId, accepted);
+
     if (accepted) {
       setProgVerb('Receiving');
-      setProgFile(reqData.meta.name);
+      setProgFile(reqData.files[0]?.fileName || 'file');
       setProgPct(0); setProgStats('Starting…'); setProgDone(false);
       setProgVis(true);
     }
     setReqData(null);
   }
 
-  // ── Share / save received file ────────────────────────────────────────────
+  // ── Share / extract received file ─────────────────────────────────────────
   async function handleShare() {
     if (!savedUri) return;
     if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(savedUri);
@@ -203,10 +209,12 @@ export default function LocalScreen() {
   async function handleExtractZip() {
     if (!savedUri) return;
     try {
-      const b64  = await FileSystem.readAsStringAsync(savedUri, { encoding: FileSystem.EncodingType.Base64 });
-      const bin  = atob(b64);
-      const buf  = new ArrayBuffer(bin.length);
-      const u8   = new Uint8Array(buf);
+      const b64 = await FileSystem.readAsStringAsync(savedUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const bin = atob(b64);
+      const buf = new ArrayBuffer(bin.length);
+      const u8  = new Uint8Array(buf);
       for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
       const entries = await extractZip(buf);
       showStatus(`✓ Extracted ${entries.length} files to cache`, 'success');
@@ -220,14 +228,15 @@ export default function LocalScreen() {
     router.back();
   }
 
+  const totalSelectedSize = selectedFiles?.reduce((s, f) => s + f.size, 0) ?? 0;
+
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <View style={styles.bg}>
       <SwyftHeader badge="📡 Local" onBack={handleBack} />
-
       <ScrollView style={styles.scroll} contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
 
-        {/* ── This device ──────────────────────────────────────────────── */}
+        {/* ── This device ───────────────────────────────────────── */}
         <View style={styles.deviceBar}>
           <View style={styles.dotPulse} />
           <View style={{ flex: 1 }}>
@@ -238,22 +247,26 @@ export default function LocalScreen() {
           <Text style={styles.onlineLabel}>Ready</Text>
         </View>
 
-        {/* ── File picker ───────────────────────────────────────────────── */}
+        {/* ── File picker ───────────────────────────────────────── */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>File to Send</Text>
           <SwyftButton label="📄 Pick File(s)" variant="outline" onPress={pickFile} />
-          {selectedFile && (
+          {selectedFiles && (
             <View style={styles.fileInfo}>
-              <Text style={styles.fileName} numberOfLines={1}>{selectedFile.name}</Text>
-              <Text style={styles.fileSize}>{fmtSize(selectedFile.size)}</Text>
+              <Text style={styles.fileName} numberOfLines={1}>
+                {selectedFiles.length === 1
+                  ? selectedFiles[0].name
+                  : `${selectedFiles.length} files`}
+              </Text>
+              <Text style={styles.fileSize}>{fmtSize(totalSelectedSize)}</Text>
             </View>
           )}
-          {!selectedFile && (
+          {!selectedFiles && (
             <Text style={styles.hintText}>Pick a file first, then tap a device below to send it</Text>
           )}
         </View>
 
-        {/* ── Nearby devices ────────────────────────────────────────────── */}
+        {/* ── Nearby devices ────────────────────────────────────── */}
         <View>
           <View style={styles.peersHeader}>
             <Text style={styles.sectionTitle}>Nearby Devices</Text>
@@ -277,26 +290,26 @@ export default function LocalScreen() {
             <View style={styles.peerList}>
               {peers.map(peer => (
                 <TouchableOpacity
-                  key={peer.id}
-                  style={[styles.peerCard, connecting === peer.id && styles.peerCardConnecting]}
+                  key={peer.fingerprint}
+                  style={[styles.peerCard, sending === peer.fingerprint && styles.peerCardConnecting]}
                   onPress={() => handlePeerTap(peer)}
                   activeOpacity={0.8}
-                  disabled={!!connecting}
+                  disabled={!!sending}
                 >
                   <View style={styles.peerAvatar}>
-                    <Text style={{ fontSize: 22 }}>{PLATFORM_ICON[peer.platform] || '📱'}</Text>
+                    <Text style={{ fontSize: 22 }}>{PLATFORM_ICON[peer.deviceType] || '📱'}</Text>
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.peerName}>{peer.name}</Text>
+                    <Text style={styles.peerName}>{peer.alias}</Text>
                     <Text style={styles.peerSub}>
-                      {peer.platform} · {peer.ip}
-                      {connecting === peer.id ? ' · Connecting…' : ''}
+                      {peer.deviceType} · {peer.ip}
+                      {sending === peer.fingerprint ? ' · Sending…' : ''}
                     </Text>
                   </View>
-                  {connecting === peer.id
+                  {sending === peer.fingerprint
                     ? <View style={styles.peerSpinner} />
                     : <Text style={styles.peerArrow}>
-                        {selectedFile ? '↑ Send' : '›'}
+                        {selectedFiles ? '↑ Send' : '›'}
                       </Text>
                   }
                 </TouchableOpacity>
@@ -305,7 +318,7 @@ export default function LocalScreen() {
           )}
         </View>
 
-        {/* ── How it works note ─────────────────────────────────────────── */}
+        {/* ── How it works note ─────────────────────────────────── */}
         <View style={styles.noteCard}>
           <Text style={styles.noteTitle}>💡 How it works</Text>
           <Text style={styles.noteText}>
@@ -319,7 +332,7 @@ export default function LocalScreen() {
 
       <StatusBar message={statusMsg} type={statusType} />
 
-      {/* ── Incoming request sheet ──────────────────────────────────────── */}
+      {/* ── Incoming request sheet ──────────────────────────────── */}
       <Modal visible={reqVisible} transparent animationType="slide" statusBarTranslucent>
         <View style={styles.overlay}>
           <View style={styles.sheet}>
@@ -328,8 +341,12 @@ export default function LocalScreen() {
             <Text style={styles.sheetTitle}>Incoming File</Text>
             <Text style={styles.sheetFrom}>from {reqData?.from}</Text>
             <View style={styles.sheetFile}>
-              <Text style={styles.sheetFileName} numberOfLines={2}>{reqData?.meta.name}</Text>
-              <Text style={styles.sheetFileSize}>{reqData ? fmtSize(reqData.meta.size) : ''}</Text>
+              <Text style={styles.sheetFileName} numberOfLines={2}>
+                {reqData?.files.map(f => f.fileName).join(', ')}
+              </Text>
+              <Text style={styles.sheetFileSize}>
+                {reqData ? fmtSize(reqData.files.reduce((s, f) => s + f.size, 0)) : ''}
+              </Text>
             </View>
             <View style={styles.sheetBtns}>
               <SwyftButton label="✕ Decline" variant="red"   onPress={() => respondToRequest(false)} style={{ flex: 1 }} />
@@ -339,7 +356,7 @@ export default function LocalScreen() {
         </View>
       </Modal>
 
-      {/* ── Transfer progress ────────────────────────────────────────────── */}
+      {/* ── Transfer progress ────────────────────────────────────── */}
       <ProgressSheet
         visible={progVisible}
         verb={progVerb}
@@ -347,8 +364,8 @@ export default function LocalScreen() {
         pct={progPct}
         stats={progStats}
         done={progDone}
-        onCancel={() => {
-          tmRef.current?.cancelTransfer();
+        onCancel={async () => {
+          await tmRef.current?.cancelTransfer();
           setProgVis(false);
           showStatus('Transfer cancelled', 'info');
         }}
@@ -369,16 +386,15 @@ export default function LocalScreen() {
   );
 }
 
+// Styles unchanged from original — visual design is preserved
 const styles = StyleSheet.create({
   bg:     { flex: 1, backgroundColor: colors.bg },
   scroll: { flex: 1 },
   body:   { padding: 20, paddingBottom: 60, gap: 16 },
-
   sectionTitle: {
     fontSize: font.xs, fontWeight: '700', color: colors.faint,
     textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10,
   },
-
   deviceBar: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
     borderRadius: radius.md, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 10,
@@ -388,7 +404,6 @@ const styles = StyleSheet.create({
   deviceIP:    { fontSize: font.xs, color: '#383838', marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
   onlineDot:   { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.green },
   onlineLabel: { fontSize: font.xs, color: colors.green },
-
   card: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
     borderRadius: radius.md, padding: 16, gap: 10,
@@ -397,13 +412,11 @@ const styles = StyleSheet.create({
   fileName: { fontSize: font.base, fontWeight: '600', color: '#ccc' },
   fileSize: { fontSize: font.xs, color: colors.muted, marginTop: 2 },
   hintText: { fontSize: font.xs, color: colors.muted, textAlign: 'center', lineHeight: 17 },
-
   peersHeader: { marginBottom: 10 },
   scanRow:     { flexDirection: 'row', alignItems: 'center', gap: 8 },
   spinner:     { width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: '#1a1a1a', borderTopColor: colors.green },
   scanText:    { fontSize: font.xs, color: colors.muted, flex: 1 },
   peerCount:   { fontSize: font.xs, color: colors.green },
-
   emptyCard: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
     borderRadius: radius.md, padding: 28, alignItems: 'center', borderStyle: 'dashed',
@@ -411,7 +424,6 @@ const styles = StyleSheet.create({
   emptyIcon:  { fontSize: 36, marginBottom: 12 },
   emptyTitle: { fontSize: font.base, fontWeight: '600', color: colors.white, marginBottom: 8 },
   emptyDesc:  { fontSize: font.xs, color: colors.muted, textAlign: 'center', lineHeight: 18 },
-
   peerList: { gap: 8 },
   peerCard: {
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
@@ -423,14 +435,12 @@ const styles = StyleSheet.create({
   peerSub:     { fontSize: font.xs, color: colors.muted, marginTop: 2 },
   peerArrow:   { color: colors.green, fontSize: font.sm, fontWeight: '700' },
   peerSpinner: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: '#1a1a1a', borderTopColor: colors.green },
-
   noteCard: {
     backgroundColor: 'rgba(16,185,129,0.04)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.1)',
     borderRadius: radius.md, padding: 16, gap: 8,
   },
   noteTitle: { fontSize: font.sm, fontWeight: '700', color: 'rgba(16,185,129,0.6)' },
   noteText:  { fontSize: font.xs, color: '#3a3a3a', lineHeight: 18 },
-
   overlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,.85)', justifyContent: 'flex-end' },
   sheet:      { backgroundColor: '#161616', borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, borderWidth: 1, borderColor: colors.border2, padding: 24, paddingBottom: 36 },
   sheetHandle:   { width: 36, height: 4, backgroundColor: colors.border2, borderRadius: 99, alignSelf: 'center', marginBottom: 22 },
@@ -441,7 +451,6 @@ const styles = StyleSheet.create({
   sheetFileName: { fontSize: font.base, fontWeight: '600', color: '#ddd', textAlign: 'center' },
   sheetFileSize: { fontSize: font.xs, color: colors.muted, marginTop: 3 },
   sheetBtns:     { flexDirection: 'row', gap: 10 },
-
   dlBtn:     { backgroundColor: colors.green, borderRadius: radius.md, padding: 14, alignItems: 'center' },
   dlBtnText: { color: '#fff', fontWeight: '700', fontSize: font.base },
 });

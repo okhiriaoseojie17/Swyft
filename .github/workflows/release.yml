@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     strategy:
-      fail-fast: false  
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
@@ -42,6 +42,7 @@ jobs:
         run: npm run dist -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -51,6 +52,5 @@ jobs:
             app/dist/*.exe
             app/dist/*.dmg
             app/dist/*.AppImage
-            app/dist/**/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

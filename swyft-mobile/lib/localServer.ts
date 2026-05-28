@@ -1,225 +1,242 @@
 /**
- * lib/localServer.ts
+ * lib/localServer.ts  (MOBILE)
  *
- * Lightweight in-app TCP server for phone↔phone local transfers (port 3002).
- * Mobile→desktop uses socket.io-client (see localClient.ts).
+ * HTTP server using expo-http-server real API:
+ *   setup(port, onStatus)   — configure port
+ *   route(path, method, cb) — register a route handler
+ *   start()                 — begin listening
+ *   stop()                  — shut down
  *
- * Framing: every message is [4-byte big-endian length][payload].
- * Binary file chunks are sent as two consecutive frames:
- *   Frame 1: JSON  { type:'chunk', transferId }
- *   Frame 2: binary payload
+ * RequestEvent fields:
+ *   uuid, method, path, body, headersJson, paramsJson, cookiesJson
+ *
+ * Response fields:
+ *   statusCode, statusDescription, contentType, headers, body
  */
 
-import TcpSocket from 'react-native-tcp-socket';
-import { EventEmitter } from 'events';
+import {
+  setup, route, start, stop,
+  RequestEvent, Response as HttpResponse,
+} from 'expo-http-server';
+import * as FileSystem from 'expo-file-system';
+import { Platform } from 'react-native';
+import {
+  SWYFT_PORT,
+  PROTOCOL_VERSION,
+  SwyftAnnouncement,
+  PrepareUploadRequest,
+} from './protocol';
 
-export const MOBILE_SERVER_PORT = 3002;
+export { SWYFT_PORT as SERVER_PORT };
 
 export interface TransferRequest {
-  transferId: string;
-  from:       string;
-  fromId:     string;
-  meta:       { name: string; size: number; mimeType: string };
+  sessionId: string;
+  from:      string;
+  fromId:    string;
+  files:     { id: string; fileName: string; size: number; fileType: string }[];
 }
 
 export interface LocalServerCallbacks {
-  onPeerConnected:    (peerId: string, peerName: string) => void;
-  onPeerDisconnected: (peerId: string)                   => void;
-  onTransferRequest:  (req: TransferRequest)             => void;
-  onTransferAccepted: (transferId: string)               => void;
-  onTransferDeclined: (transferId: string)               => void;
-  onFileMetadata:     (transferId: string, meta: any)    => void;
-  onFileChunk:        (transferId: string, chunk: Buffer) => void;
-  onFileEnd:          (transferId: string)               => void;
-  onFileCancel:       (transferId: string)               => void;
+  onTransferRequest:   (req: TransferRequest) => void;
+  onTransferProgress:  (sessionId: string, fileId: string, received: number, total: number) => void;
+  onTransferComplete:  (sessionId: string, fileId: string, uri: string) => void;
+  onTransferCancelled: (sessionId: string) => void;
+  onError:             (msg: string) => void;
 }
 
-interface ConnectedClient {
-  id:             string;
-  name:           string;
-  socket:         any;
-  buffer:         Buffer;
-  // FIX: track whether the next frame is a binary chunk (not JSON)
-  awaitingBinaryForTid: string | null;
+interface PendingSession {
+  req:      TransferRequest;
+  accepted: boolean | null;
+  tokens:   Map<string, string>;   // fileId → token
 }
 
-export class LocalServer extends EventEmitter {
-  private server:  any = null;
-  private clients: Map<string, ConnectedClient> = new Map();
-  private cb:      LocalServerCallbacks;
-  private myId:    string;
-  private myName:  string;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function json(statusCode: number, data: object): HttpResponse {
+  return {
+    statusCode,
+    contentType: 'application/json',
+    body: JSON.stringify(data),
+  };
+}
+
+function parseQuery(paramsJson: string): Record<string, string> {
+  try { return JSON.parse(paramsJson) || {}; } catch { return {}; }
+}
+
+// ─── LocalServer ──────────────────────────────────────────────────────────────
+
+export class LocalServer {
+  private cb:       LocalServerCallbacks;
+  private myAlias:  string;
+  private myFP:     string;
+  private sessions: Map<string, PendingSession> = new Map();
   running = false;
 
-  constructor(myId: string, myName: string, cb: LocalServerCallbacks) {
-    super();
-    this.myId   = myId;
-    this.myName = myName;
-    this.cb     = cb;
+  constructor(myAlias: string, myFingerprint: string, cb: LocalServerCallbacks) {
+    this.myAlias = myAlias;
+    this.myFP    = myFingerprint;
+    this.cb      = cb;
   }
 
-  start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.server = TcpSocket.createServer((socket: any) => {
-        this._handleClient(socket);
-      });
+  async start(): Promise<void> {
+    if (this.running) return;
 
-      this.server.on('error', (err: any) => {
-        console.warn('[LocalServer] error:', err.message);
-        reject(err);
-      });
-
-      this.server.listen({ port: MOBILE_SERVER_PORT, host: '0.0.0.0' }, () => {
-        this.running = true;
-        console.log('[LocalServer] listening on port', MOBILE_SERVER_PORT);
-        resolve();
-      });
-    });
-  }
-
-  stop() {
-    this.running = false;
-    for (const client of this.clients.values()) {
-      try { client.socket.destroy(); } catch (_) {}
-    }
-    this.clients.clear();
-    try { this.server?.close(); } catch (_) {}
-    this.server = null;
-  }
-
-  sendTo(clientId: string, msg: object) {
-    const client = this.clients.get(clientId);
-    if (!client) return;
-    this._writeFrame(client.socket, Buffer.from(JSON.stringify(msg)));
-  }
-
-  sendChunkTo(clientId: string, transferId: string, chunk: Buffer) {
-    const client = this.clients.get(clientId);
-    if (!client) return;
-    const header  = Buffer.from(JSON.stringify({ type: 'chunk', transferId }));
-    const lenBuf1 = Buffer.alloc(4); lenBuf1.writeUInt32BE(header.length, 0);
-    const lenBuf2 = Buffer.alloc(4); lenBuf2.writeUInt32BE(chunk.length,  0);
-    try { client.socket.write(Buffer.concat([lenBuf1, header, lenBuf2, chunk])); } catch (_) {}
-  }
-
-  getPeers(): { id: string; name: string }[] {
-    return Array.from(this.clients.values()).map(c => ({ id: c.id, name: c.name }));
-  }
-
-  private _handleClient(socket: any) {
-    const tempId = Math.random().toString(36).slice(2);
-    const client: ConnectedClient = {
-      id:     tempId,
-      name:   'Unknown',
-      socket,
-      buffer: Buffer.alloc(0),
-      awaitingBinaryForTid: null,   // FIX: initialise per-client binary tracking
-    };
-
-    socket.on('data', (data: Buffer) => {
-      client.buffer = Buffer.concat([client.buffer, data]);
-      this._processBuffer(client);
-    });
-
-    socket.on('close', () => {
-      this.clients.delete(client.id);
-      this.cb.onPeerDisconnected(client.id);
-      this.emit('peer-list-changed');
-    });
-
-    socket.on('error', () => {
-      this.clients.delete(client.id);
-      this.emit('peer-list-changed');
-    });
-
-    this.clients.set(tempId, client);
-  }
-
-  private _writeFrame(socket: any, payload: Buffer) {
-    const lenBuf = Buffer.alloc(4);
-    lenBuf.writeUInt32BE(payload.length, 0);
-    try { socket.write(Buffer.concat([lenBuf, payload])); } catch (_) {}
-  }
-
-  private _processBuffer(client: ConnectedClient) {
-    while (true) {
-      if (client.buffer.length < 4) break;
-      const msgLen = client.buffer.readUInt32BE(0);
-      // Guard against corrupted frames that would cause the buffer to grow unbounded
-      if (msgLen > 100 * 1024 * 1024) {
-        client.buffer = Buffer.alloc(0);
-        break;
+    // 1. Configure port
+    setup(SWYFT_PORT, (event) => {
+      if (event.status === 'ERROR') {
+        console.warn('[LocalServer] error:', event.message);
+        this.cb.onError(event.message);
       }
-      if (client.buffer.length < 4 + msgLen) break;
+    });
 
-      const msgBuf      = client.buffer.slice(4, 4 + msgLen);
-      client.buffer     = client.buffer.slice(4 + msgLen);
+    // 2. Register routes — must be done BEFORE calling start()
 
-      // ── FIX: if we're waiting for a binary payload, deliver it directly ──
-      if (client.awaitingBinaryForTid !== null) {
-        const tid = client.awaitingBinaryForTid;
-        client.awaitingBinaryForTid = null;
-        this.cb.onFileChunk(tid, msgBuf);
-        continue;
-      }
+    // GET /info
+    route('/info', 'GET', async (_req: RequestEvent): Promise<HttpResponse> => {
+      const info: SwyftAnnouncement = {
+        alias:       this.myAlias,
+        version:     PROTOCOL_VERSION,
+        deviceModel: Platform.OS === 'ios' ? 'iPhone' : 'Android',
+        deviceType:  'mobile',
+        fingerprint: this.myFP,
+        port:        SWYFT_PORT,
+        protocol:    'http',
+        download:    true,
+      };
+      return json(200, info);
+    });
 
+    // POST /prepare-upload
+    route('/prepare-upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
-        const msg = JSON.parse(msgBuf.toString());
-        this._handleMessage(client, msg);
-      } catch (_) {
-        // Unexpected non-JSON frame — ignore
+        const body: PrepareUploadRequest = JSON.parse(req.body);
+        const fileList = Object.values(body.files);
+
+        const sessionId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        const tokens    = new Map<string, string>();
+        const files: TransferRequest['files'] = [];
+
+        for (const f of fileList) {
+          const token = Math.random().toString(36).slice(2);
+          tokens.set(f.id, token);
+          files.push({ id: f.id, fileName: f.fileName, size: f.size, fileType: f.fileType });
+        }
+
+        const session: PendingSession = {
+          req: {
+            sessionId,
+            from:   body.info.alias,
+            fromId: body.info.fingerprint,
+            files,
+          },
+          accepted: null,
+          tokens,
+        };
+
+        this.sessions.set(sessionId, session);
+        this.cb.onTransferRequest(session.req);
+
+        // Wait up to 30 s for user to accept or decline
+        const accepted = await this._waitForDecision(sessionId, 30000);
+
+        if (!accepted) {
+          this.sessions.delete(sessionId);
+          return json(403, { message: 'Declined' });
+        }
+
+        return json(200, {
+          sessionId,
+          files: Object.fromEntries(tokens),
+        });
+      } catch (err: any) {
+        return json(400, { message: err.message });
       }
-    }
+    });
+
+    // POST /upload  — params: sessionId, fileId, token
+    route('/upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
+      try {
+        const params    = parseQuery(req.paramsJson);
+        const sessionId = params.sessionId;
+        const fileId    = params.fileId;
+        const token     = params.token;
+        const session   = this.sessions.get(sessionId);
+
+        if (!session || session.accepted !== true)
+          return json(403, { message: 'Session not found or not accepted' });
+
+        if (session.tokens.get(fileId) !== token)
+          return json(403, { message: 'Invalid token' });
+
+        const fileInfo = session.req.files.find(f => f.id === fileId);
+        if (!fileInfo)
+          return json(400, { message: 'Unknown file' });
+
+        // Sanitise filename and prefix with sessionId to avoid collisions
+        const safeName = fileInfo.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
+        const dest     = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
+
+        // expo-http-server delivers body as a base64 string
+        await FileSystem.writeAsStringAsync(dest, req.body, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        // Clean up this file's token
+        session.tokens.delete(fileId);
+        this.cb.onTransferComplete(sessionId, fileId, dest);
+
+        // Only delete session when ALL files have been received
+        if (session.tokens.size === 0) {
+          this.sessions.delete(sessionId);
+        }
+
+        return json(200, { message: 'received' });
+      } catch (err: any) {
+        this.cb.onError('Upload error: ' + err.message);
+        return json(500, { message: err.message });
+      }
+    });
+
+    // POST /cancel
+    route('/cancel', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
+      try {
+        const { sessionId } = JSON.parse(req.body || '{}');
+        this.sessions.delete(sessionId);
+        this.cb.onTransferCancelled(sessionId);
+        return json(200, { message: 'cancelled' });
+      } catch {
+        return json(400, { message: 'bad request' });
+      }
+    });
+
+    // 3. Start listening
+    start();
+    this.running = true;
+    console.log('[LocalServer] listening on port', SWYFT_PORT);
   }
 
-  private _handleMessage(client: ConnectedClient, msg: any) {
-    switch (msg.type) {
+  stop(): void {
+    this.running = false;
+    try { stop(); } catch (_) {}
+    this.sessions.clear();
+  }
 
-      case 'hello': {
-        // ── FIX: delete the old TEMP id, not the new one ──
-        const oldId = client.id;
-        client.id   = msg.id;
-        client.name = msg.name;
-        this.clients.delete(oldId);       // was: this.clients.delete(client.id) — wrong!
-        this.clients.set(msg.id, client);
-        this._writeFrame(client.socket, Buffer.from(JSON.stringify({
-          type: 'hello-ack', id: this.myId, name: this.myName,
-        })));
-        this.cb.onPeerConnected(client.id, client.name);
-        this.emit('peer-list-changed');
-        break;
-      }
+  respondToSession(sessionId: string, accepted: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (session) session.accepted = accepted;
+  }
 
-      case 'request-transfer':
-        this.cb.onTransferRequest({
-          transferId: msg.transferId,
-          from:       client.name,
-          fromId:     client.id,
-          meta:       msg.meta,
-        });
-        break;
-
-      case 'transfer-response':
-        if (msg.accepted) this.cb.onTransferAccepted(msg.transferId);
-        else              this.cb.onTransferDeclined(msg.transferId);
-        break;
-
-      case 'file-metadata':
-        this.cb.onFileMetadata(msg.transferId, msg.metadata);
-        break;
-
-      case 'chunk':
-        // ── FIX: mark that the very next frame is the binary payload ──
-        client.awaitingBinaryForTid = msg.transferId;
-        break;
-
-      case 'file-end':
-        this.cb.onFileEnd(msg.transferId);
-        break;
-
-      case 'file-cancel':
-        this.cb.onFileCancel(msg.transferId);
-        break;
-    }
+  private _waitForDecision(sessionId: string, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const poll = setInterval(() => {
+        const session = this.sessions.get(sessionId);
+        if (!session)               { clearInterval(poll); resolve(false); return; }
+        if (session.accepted === true)  { clearInterval(poll); resolve(true);  return; }
+        if (session.accepted === false) { clearInterval(poll); resolve(false); return; }
+        if (Date.now() > deadline)  { clearInterval(poll); resolve(false); return; }
+      }, 100);
+    });
   }
 }
