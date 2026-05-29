@@ -39,7 +39,6 @@
       },
       "package": "com.swyft.app",
       "versionCode": 1,
-      "usesCleartextTraffic": true,
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
@@ -53,12 +52,7 @@
         "VIBRATE",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
-        "android.permission.INTERNET",
-        "android.permission.ACCESS_NETWORK_STATE", 
-        "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
-        "android.permission.FOREGROUND_SERVICE"
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
       ],
       "newArchEnabled": false
     },

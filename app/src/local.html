@@ -626,45 +626,59 @@
     openProgress('Sending', selectedFile.name);
     isTransferring = true; isCancelled = false;
 
-    // Upload using fetch with streaming body
+    // Upload — convert file to base64 first so expo-http-server on Android
+    // receives a clean string via request.content() (Kotlin).
+    // Streaming binary bodies get corrupted by the Kotlin HTTP server internals.
     try {
       abortCtrl = new AbortController();
       const t0  = Date.now();
+      const total = selectedFile.size;
 
-      // Track progress using a TransformStream wrapper
-      let uploaded = 0;
-      const total  = selectedFile.size;
-      const stream = selectedFile.stream().pipeThrough(new TransformStream({
-        transform(chunk, controller) {
-          uploaded += chunk.byteLength;
-          const pct     = Math.round((uploaded / total) * 100);
-          const elapsed = (Date.now() - t0) / 1000 || 0.001;
-          const speed   = (uploaded / 1024 / 1024) / elapsed;
-          document.getElementById('progFill').style.width = pct + '%';
-          document.getElementById('progStats').textContent =
-            `${fmtSize(uploaded)} / ${fmtSize(total)} @ ${speed.toFixed(2)} MB/s`;
-          controller.enqueue(chunk);
-        },
-      }));
+      // Step 1 — Read file as ArrayBuffer then convert to base64
+      document.getElementById('progStats').textContent = 'Reading file…';
+      const arrayBuffer = await selectedFile.arrayBuffer();
+
+      if (isCancelled) return;
+
+      // Convert to base64 in chunks to avoid call stack overflow on large files
+      const uint8   = new Uint8Array(arrayBuffer);
+      const CHUNK   = 8192;
+      let   binary  = '';
+      for (let i = 0; i < uint8.length; i += CHUNK) {
+        binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
+        // Update progress during encoding (first 50%)
+        const pct = Math.round((i / uint8.length) * 50);
+        document.getElementById('progFill').style.width = pct + '%';
+        document.getElementById('progStats').textContent = `Encoding… ${pct}%`;
+        // Yield to keep UI responsive
+        if (i % (CHUNK * 10) === 0) await new Promise(r => setTimeout(r, 0));
+      }
+      const base64Body = btoa(binary);
+
+      if (isCancelled) return;
+
+      // Step 2 — POST base64 string as text/plain to phone's HTTP server
+      document.getElementById('progFill').style.width  = '60%';
+      document.getElementById('progStats').textContent = 'Sending…';
 
       const uploadRes = await fetch(
         `${peerBaseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
         {
           method:  'POST',
           headers: {
-            'Content-Type':  selectedFile.type || 'application/octet-stream',
-            'X-File-Name':   encodeURIComponent(selectedFile.name),
+            // text/plain so Kotlin's request.content() gets a clean string
+            'Content-Type': 'text/plain',
+            'X-File-Name':  encodeURIComponent(selectedFile.name),
           },
-          body:    stream,
-          signal:  abortCtrl.signal,
-          // duplex required for streaming body in Chrome
-          duplex: 'half',
+          body:   base64Body,
+          signal: abortCtrl.signal,
         }
       );
 
       if (!uploadRes.ok) throw new Error(`Upload failed: HTTP ${uploadRes.status}`);
 
       isTransferring = false;
+      document.getElementById('progFill').style.width      = '100%';
       document.getElementById('progTitle').textContent     = '✓ Sent!';
       document.getElementById('progStats').textContent     = fmtSize(total) + ' transferred';
       document.getElementById('progCancelBtn').style.display = 'none';

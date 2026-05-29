@@ -110,10 +110,8 @@ export default function LocalScreen() {
     tm.start().then(() => {
       setMyName(tm.getAlias());
       setMyIP(tm.getIP());
-       Alert.alert('Server', `HTTP server started on ${tm.getIP()}:53317`);
   showStatus('✓ Searching for nearby devices…', 'info');
     }).catch(err => {
-      Alert.alert('Server Error', err.message);
       showStatus('⚠️ Could not start local server: ' + err.message, 'error');
     });
 
