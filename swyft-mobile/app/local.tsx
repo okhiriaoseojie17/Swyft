@@ -76,7 +76,11 @@ export default function LocalScreen() {
 
       onTransferProgress: (pct, speed, sent, total) => {
         setProgPct(pct);
-        setProgStats(`${fmtSize(sent)} / ${fmtSize(total)} @ ${speed.toFixed(2)} MB/s`);
+        setProgStats(
+          speed > 0
+            ? `${fmtSize(sent)} / ${fmtSize(total)} @ ${speed.toFixed(2)} MB/s`
+            : `${fmtSize(sent)} / ${fmtSize(total)}`
+        );
       },
 
       onTransferComplete: (fileName, uri) => {
@@ -165,11 +169,12 @@ export default function LocalScreen() {
     if (sending) return;
 
     setSending(peer.fingerprint);
-    showStatus(`Sending to ${peer.alias}…`, 'info');
+    showStatus(`Waiting for ${peer.alias} to accept…`, 'info');
 
+    // Open progress sheet immediately so user sees feedback
     setProgVerb('Sending');
     setProgFile(selectedFiles.map(f => f.name).join(', '));
-    setProgPct(0); setProgStats('Starting…'); setProgDone(false);
+    setProgPct(0); setProgStats('Waiting for acceptance…'); setProgDone(false);
     setProgVis(true);
 
     try {
