@@ -1,25 +1,26 @@
 /**
  * lib/localServer.ts  (MOBILE)
  *
- * HTTP server using expo-http-server real API:
- *   setup(port, onStatus)   — configure port
- *   route(path, method, cb) — register a route handler
- *   start()                 — begin listening
- *   stop()                  — shut down
+ * HTTP server using expo-http-server real API.
  *
- * RequestEvent fields:
- *   uuid, method, path, body, headersJson, paramsJson, cookiesJson
+ * KEY ARCHITECTURAL FIX:
+ *   expo-http-server (Kotlin) blocks one server thread per request using
+ *   Thread.sleep(10) while waiting for the JS response. If /prepare-upload
+ *   blocks for 30 seconds waiting for the user, the server thread is tied up
+ *   and the subsequent /upload request can never be served — causing the
+ *   desktop to hang at 0% indefinitely.
  *
- * Response fields:
- *   statusCode, statusDescription, contentType, headers, body
+ *   FIX: /prepare-upload returns IMMEDIATELY with status:'pending'.
+ *   Desktop polls GET /transfer-status?sessionId=X every 1 second.
+ *   When user taps Accept, /transfer-status returns status:'accepted'.
+ *   Desktop then sends the file via POST /upload — server thread is free.
  *
- * FIXES vs previous version:
- *  1. /upload now writes body directly as Base64 — desktop sends base64-encoded
- *     file body as text/plain so Kotlin's request.content() receives it cleanly
- *  2. paramsJson parsing — expo-http-server puts query params in paramsJson
- *     but they may also arrive in cookiesJson depending on version; we check both
- *  3. Session token cleanup fixed — tokens.delete(fileId) before size check
- *  4. Filename collision fixed — sessionId prefix on dest path
+ * Endpoints:
+ *   GET  /info                          → device info
+ *   POST /prepare-upload                → registers session, returns pending immediately
+ *   GET  /transfer-status?sessionId=X   → 'pending' | 'accepted' | 'declined'
+ *   POST /upload?sessionId=&fileId=&token= → receive base64 file body
+ *   POST /cancel                        → cancel session
  */
 
 import {
@@ -54,8 +55,8 @@ export interface LocalServerCallbacks {
 
 interface PendingSession {
   req:      TransferRequest;
-  accepted: boolean | null;
-  tokens:   Map<string, string>;   // fileId → token
+  accepted: boolean | null;   // null = pending user decision
+  tokens:   Map<string, string>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -69,32 +70,29 @@ function json(statusCode: number, data: object): HttpResponse {
 }
 
 /**
- * expo-http-server puts query string params in paramsJson.
- * The value is a JSON object string e.g. {"sessionId":"abc","fileId":"xyz"}
- * We also fall back to parsing them from cookiesJson in case of version quirks.
+ * Parse query params from expo-http-server RequestEvent.
+ * Tries paramsJson, then cookiesJson, then manual path parsing —
+ * because different expo-http-server versions route query params differently.
  */
 function parseQueryParams(req: RequestEvent): Record<string, string> {
-  // Try paramsJson first
   try {
     const p = JSON.parse(req.paramsJson || '{}');
     if (p && Object.keys(p).length > 0) return p;
   } catch (_) {}
 
-  // Fall back to cookiesJson (some expo-http-server versions route query params here)
   try {
     const c = JSON.parse(req.cookiesJson || '{}');
     if (c && Object.keys(c).length > 0) return c;
   } catch (_) {}
 
-  // Last resort: manually parse from path if it contains a query string
   try {
     const qIdx = req.path.indexOf('?');
     if (qIdx !== -1) {
       const qs = req.path.slice(qIdx + 1);
       return Object.fromEntries(
-        qs.split('&').map(p => {
-          const [k, v] = p.split('=');
-          return [decodeURIComponent(k), decodeURIComponent(v || '')];
+        qs.split('&').map(pair => {
+          const [k, v] = pair.split('=');
+          return [decodeURIComponent(k || ''), decodeURIComponent(v || '')];
         })
       );
     }
@@ -123,11 +121,10 @@ export class LocalServer {
 
     // 1. Configure port
     setup(SWYFT_PORT, (event) => {
+      console.log('[LocalServer] status:', event.status, event.message);
       if (event.status === 'ERROR') {
-        console.warn('[LocalServer] error:', event.message);
         this.cb.onError(event.message);
       }
-      console.log('[LocalServer] status:', event.status, event.message);
     });
 
     // 2. Register ALL routes BEFORE calling start()
@@ -148,8 +145,11 @@ export class LocalServer {
     });
 
     // ── POST /prepare-upload ──────────────────────────────────────
+    // Returns IMMEDIATELY with status:'pending' — does NOT block.
+    // This keeps the server thread free for the subsequent /upload request.
     route('/prepare-upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
+        console.log('[LocalServer] /prepare-upload received');
         const body: PrepareUploadRequest = JSON.parse(req.body);
         const fileList = Object.values(body.files);
 
@@ -180,18 +180,15 @@ export class LocalServer {
         };
 
         this.sessions.set(sessionId, session);
+
+        // Show incoming request UI — user will tap Accept or Decline
         this.cb.onTransferRequest(session.req);
 
-        // Wait up to 30 s for user to accept or decline
-        const accepted = await this._waitForDecision(sessionId, 30000);
-
-        if (!accepted) {
-          this.sessions.delete(sessionId);
-          return json(403, { message: 'Declined' });
-        }
-
+        // Return immediately — desktop polls /transfer-status
+        console.log('[LocalServer] /prepare-upload returning pending for session:', sessionId);
         return json(200, {
           sessionId,
+          status: 'pending',
           files: Object.fromEntries(tokens),
         });
       } catch (err: any) {
@@ -200,12 +197,31 @@ export class LocalServer {
       }
     });
 
+    // ── GET /transfer-status ──────────────────────────────────────
+    // Desktop polls this after receiving status:'pending' from /prepare-upload.
+    // Returns instantly — no blocking.
+    route('/transfer-status', 'GET', async (req: RequestEvent): Promise<HttpResponse> => {
+      const params    = parseQueryParams(req);
+      const sessionId = params.sessionId;
+      console.log('[LocalServer] /transfer-status polled for session:', sessionId);
+
+      if (!sessionId) return json(400, { message: 'Missing sessionId' });
+
+      const session = this.sessions.get(sessionId);
+      if (!session)  return json(404, { message: 'Session not found' });
+
+      if (session.accepted === null)  return json(200, { status: 'pending' });
+      if (session.accepted === false) {
+        this.sessions.delete(sessionId);
+        return json(200, { status: 'declined' });
+      }
+      // accepted === true
+      return json(200, { status: 'accepted' });
+    });
+
     // ── POST /upload ──────────────────────────────────────────────
-    //
-    // Desktop sends the file as a BASE64-encoded string with Content-Type: text/plain.
-    // expo-http-server (Kotlin) receives it cleanly via request.content() as a String.
-    // We write it directly using FileSystem.EncodingType.Base64.
-    //
+    // Desktop sends file as base64-encoded text/plain body.
+    // Received as a clean string by Kotlin's request.content().
     // Query params: sessionId, fileId, token
     route('/upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
@@ -215,46 +231,43 @@ export class LocalServer {
         const token     = params.token;
 
         console.log('[LocalServer] /upload sessionId:', sessionId, 'fileId:', fileId);
+        console.log('[LocalServer] /upload body length:', req.body?.length ?? 'null');
 
         if (!sessionId || !fileId || !token) {
-          console.warn('[LocalServer] /upload missing params. paramsJson:', req.paramsJson, 'path:', req.path);
+          console.warn('[LocalServer] /upload missing params. paramsJson:', req.paramsJson);
           return json(400, { message: 'Missing sessionId, fileId or token' });
         }
 
         const session = this.sessions.get(sessionId);
-
         if (!session || session.accepted !== true) {
           console.warn('[LocalServer] /upload session not found or not accepted:', sessionId);
           return json(403, { message: 'Session not found or not accepted' });
         }
 
         if (session.tokens.get(fileId) !== token) {
-          console.warn('[LocalServer] /upload invalid token for fileId:', fileId);
+          console.warn('[LocalServer] /upload invalid token');
           return json(403, { message: 'Invalid token' });
         }
 
         const fileInfo = session.req.files.find(f => f.id === fileId);
-        if (!fileInfo) {
-          return json(400, { message: 'Unknown file' });
-        }
+        if (!fileInfo) return json(400, { message: 'Unknown file' });
 
         // Sanitise filename and prefix with sessionId to prevent collisions
         const safeName = fileInfo.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
         const dest     = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
 
-        // Body is a base64 string — desktop encodes the file as base64 before sending.
-        // Write it directly using Base64 encoding so the file is reconstructed correctly.
+        // Body is base64 — desktop encoded the file before sending
         await FileSystem.writeAsStringAsync(dest, req.body, {
           encoding: FileSystem.EncodingType.Base64,
         });
 
-        console.log('[LocalServer] file saved to:', dest);
+        console.log('[LocalServer] file saved:', dest);
 
-        // Clean up this file's token
+        // Clean up token for this file
         session.tokens.delete(fileId);
         this.cb.onTransferComplete(sessionId, fileId, dest);
 
-        // Only delete the session when ALL files in it have been received
+        // Delete session only when ALL files received
         if (session.tokens.size === 0) {
           this.sessions.delete(sessionId);
         }
@@ -279,7 +292,7 @@ export class LocalServer {
       }
     });
 
-    // 3. Start listening — AFTER all routes are registered
+    // 3. Start listening — AFTER all routes registered
     start();
     this.running = true;
     console.log('[LocalServer] HTTP server listening on port', SWYFT_PORT);
@@ -296,20 +309,9 @@ export class LocalServer {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.accepted = accepted;
-      console.log('[LocalServer] session', sessionId, accepted ? 'accepted' : 'declined');
+      console.log('[LocalServer] session', sessionId, accepted ? 'ACCEPTED' : 'DECLINED');
+    } else {
+      console.warn('[LocalServer] respondToSession — session not found:', sessionId);
     }
-  }
-
-  private _waitForDecision(sessionId: string, timeoutMs: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const deadline = Date.now() + timeoutMs;
-      const poll = setInterval(() => {
-        const session = this.sessions.get(sessionId);
-        if (!session)                   { clearInterval(poll); resolve(false); return; }
-        if (session.accepted === true)  { clearInterval(poll); resolve(true);  return; }
-        if (session.accepted === false) { clearInterval(poll); resolve(false); return; }
-        if (Date.now() > deadline)      { clearInterval(poll); resolve(false); return; }
-      }, 100);
-    });
   }
 }

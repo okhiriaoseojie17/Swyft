@@ -620,53 +620,84 @@
     if (card) card.classList.remove('connecting');
 
     const { sessionId, files: tokens } = sessionRes;
-    const token      = tokens[fileId];
+    const token       = tokens[fileId];
     const peerBaseUrl = peer.baseUrl || `http://${peer.ip}:${peer.port || 53317}`;
+
+    // ── Poll /transfer-status until phone accepts or declines ────
+    // /prepare-upload returns immediately (status:'pending') so expo-http-server's
+    // single thread is freed. We poll here until the user taps Accept/Decline.
+    if (sessionRes.status === 'pending') {
+      showStatus(`Waiting for ${peer.alias} to accept…`, 'info');
+      const deadline = Date.now() + 35000;
+      let decided = false;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1000));
+        if (isCancelled) {
+          if (card) card.classList.remove('connecting');
+          return;
+        }
+        try {
+          const statusRes  = await fetch(
+            `${peerBaseUrl}/transfer-status?sessionId=${encodeURIComponent(sessionId)}`,
+            { signal: abortCtrl || undefined }
+          );
+          const statusData = await statusRes.json();
+          if (statusData.status === 'accepted') { decided = true; break; }
+          if (statusData.status === 'declined') {
+            showStatus('❌ Transfer declined', 'error');
+            if (card) card.classList.remove('connecting');
+            return;
+          }
+          // status === 'pending' — keep polling
+        } catch (_) {
+          // network blip — keep polling
+        }
+      }
+      if (!decided) {
+        showStatus('❌ No response from ' + peer.alias + ' — timed out', 'error');
+        if (card) card.classList.remove('connecting');
+        return;
+      }
+    }
 
     openProgress('Sending', selectedFile.name);
     isTransferring = true; isCancelled = false;
+    abortCtrl = new AbortController();
 
-    // Upload — convert file to base64 first so expo-http-server on Android
-    // receives a clean string via request.content() (Kotlin).
-    // Streaming binary bodies get corrupted by the Kotlin HTTP server internals.
+    // ── Convert file to base64 then POST as text/plain ────────────
+    // expo-http-server (Kotlin) uses request.content() which returns a String.
+    // Sending raw binary corrupts the body. Base64 + text/plain is clean and safe.
     try {
-      abortCtrl = new AbortController();
-      const t0  = Date.now();
       const total = selectedFile.size;
 
-      // Step 1 — Read file as ArrayBuffer then convert to base64
+      // Step 1 — Read file into ArrayBuffer
       document.getElementById('progStats').textContent = 'Reading file…';
       const arrayBuffer = await selectedFile.arrayBuffer();
-
       if (isCancelled) return;
 
-      // Convert to base64 in chunks to avoid call stack overflow on large files
-      const uint8   = new Uint8Array(arrayBuffer);
-      const CHUNK   = 8192;
-      let   binary  = '';
+      // Step 2 — Convert to base64 in 8 KB chunks (avoids stack overflow)
+      const uint8  = new Uint8Array(arrayBuffer);
+      const CHUNK  = 8192;
+      let   binary = '';
       for (let i = 0; i < uint8.length; i += CHUNK) {
         binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
-        // Update progress during encoding (first 50%)
         const pct = Math.round((i / uint8.length) * 50);
-        document.getElementById('progFill').style.width = pct + '%';
+        document.getElementById('progFill').style.width  = pct + '%';
         document.getElementById('progStats').textContent = `Encoding… ${pct}%`;
-        // Yield to keep UI responsive
-        if (i % (CHUNK * 10) === 0) await new Promise(r => setTimeout(r, 0));
+        if (i % (CHUNK * 20) === 0) await new Promise(r => setTimeout(r, 0));
       }
       const base64Body = btoa(binary);
-
       if (isCancelled) return;
 
-      // Step 2 — POST base64 string as text/plain to phone's HTTP server
+      // Step 3 — Send to phone
       document.getElementById('progFill').style.width  = '60%';
-      document.getElementById('progStats').textContent = 'Sending…';
+      document.getElementById('progStats').textContent = 'Sending to phone…';
 
       const uploadRes = await fetch(
         `${peerBaseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
         {
           method:  'POST',
           headers: {
-            // text/plain so Kotlin's request.content() gets a clean string
             'Content-Type': 'text/plain',
             'X-File-Name':  encodeURIComponent(selectedFile.name),
           },
