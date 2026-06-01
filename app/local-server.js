@@ -168,8 +168,9 @@ localApp.get('/info', (_, res) => {
 // In-memory session store
 const sessions = new Map();   // sessionId → { req, accepted, tokens }
 
-// POST /prepare-upload — sender announces intent; we ask user; return tokens
-localApp.post('/prepare-upload', async (req, res) => {
+// POST /prepare-upload — returns IMMEDIATELY with status:'pending'
+// Sender polls GET /transfer-status until accepted or declined.
+localApp.post('/prepare-upload', (req, res) => {
   try {
     const body      = req.body;
     const fileList  = Object.values(body.files || {});
@@ -183,34 +184,45 @@ localApp.post('/prepare-upload', async (req, res) => {
     const session = { req: { sessionId, from: body.info?.alias, fromId: body.info?.fingerprint, files: fileList }, accepted: null, tokens };
     sessions.set(sessionId, session);
 
-    // Tell the UI about the incoming request
+    // Tell the desktop UI about the incoming request
     io.emit('incoming-request-local', { sessionId, from: session.req.from, files: fileList });
 
-    // Wait up to 30 s for UI to respond via /accept-session or /decline-session
-    const accepted = await waitForDecision(sessionId, 30000);
-
-    if (!accepted) {
-      sessions.delete(sessionId);
-      return res.status(403).json({ message: 'Declined' });
-    }
-
-    res.json({ sessionId, files: tokens });
+    // Return immediately — sender polls /transfer-status
+    console.log('[prepare-upload] session created:', sessionId, 'from:', session.req.from);
+    res.json({ sessionId, status: 'pending', files: tokens });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// POST /upload — streaming file body
-localApp.post('/upload', express.raw({ type: '*/*', limit: '2gb' }), async (req, res) => {
+// GET /transfer-status?sessionId=X — sender polls after getting status:'pending'
+localApp.get('/transfer-status', (req, res) => {
+  const { sessionId } = req.query;
+  console.log('[transfer-status] polled for:', sessionId);
+  if (!sessionId) return res.status(400).json({ message: 'Missing sessionId' });
+  const session = sessions.get(sessionId);
+  if (!session)  return res.status(404).json({ message: 'Session not found' });
+  if (session.accepted === null)  return res.json({ status: 'pending' });
+  if (session.accepted === false) { sessions.delete(sessionId); return res.json({ status: 'declined' }); }
+  return res.json({ status: 'accepted' });
+});
+
+// POST /upload — receives base64-encoded file body as text/plain
+// Phone sends base64 string; desktop decodes it before writing to disk.
+localApp.post('/upload', express.text({ type: '*/*', limit: '2gb' }), async (req, res) => {
   try {
     const { sessionId, fileId, token } = req.query;
+    console.log('[upload] sessionId:', sessionId, 'fileId:', fileId);
+
     const session = sessions.get(sessionId);
 
     if (!session || session.accepted !== true) {
+      console.warn('[upload] session not found or not accepted:', sessionId);
       return res.status(403).json({ message: 'Session not found or not accepted' });
     }
 
     if (session.tokens[fileId] !== token) {
+      console.warn('[upload] invalid token');
       return res.status(403).json({ message: 'Invalid token' });
     }
 
@@ -221,14 +233,25 @@ localApp.post('/upload', express.raw({ type: '*/*', limit: '2gb' }), async (req,
     const safeName = path.basename(fileInfo.fileName).replace(/[^a-zA-Z0-9._\- ]/g, '_');
     const dest     = path.join(os.homedir(), 'Downloads', safeName);
 
-    // req.body is a Buffer (express.raw middleware)
-    fs.writeFileSync(dest, req.body);
+    // Body is a base64 string (sent as text/plain by phone/mobile sender)
+    // Decode it back to binary before writing
+    const fileBuffer = Buffer.from(req.body, 'base64');
+    fs.writeFileSync(dest, fileBuffer);
 
-    // Notify UI
+    console.log('[upload] file saved to:', dest, '— size:', fileBuffer.length, 'bytes');
+
+    // Notify desktop UI
     io.emit('transfer-complete-local', { sessionId, fileId, fileName: safeName, dest });
+
+    // Clean up session
+    delete session.tokens[fileId];
+    if (Object.keys(session.tokens).length === 0) {
+      sessions.delete(sessionId);
+    }
 
     res.json({ message: 'received' });
   } catch (err) {
+    console.error('[upload] error:', err.message);
     res.status(500).json({ message: err.message });
   }
 });
@@ -553,21 +576,6 @@ signalApp.post('/apply-firewall-fixes', (_, res) => {
   }
   next();
 });
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function waitForDecision(sessionId, timeoutMs) {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + timeoutMs;
-    const poll = setInterval(() => {
-      const session = sessions.get(sessionId);
-      if (!session)               { clearInterval(poll); resolve(false); return; }
-      if (session.accepted === true)  { clearInterval(poll); resolve(true);  return; }
-      if (session.accepted === false) { clearInterval(poll); resolve(false); return; }
-      if (Date.now() > deadline)  { clearInterval(poll); resolve(false); return; }
-    }, 100);
-  });
-}
 
 // ─── Start both servers ───────────────────────────────────────────────────────
 
