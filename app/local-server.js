@@ -86,7 +86,7 @@ const NAME_FILE = path.join(TMP, 'swyft_device_name_v2.txt');
 let DEVICE_NAME;
 try { DEVICE_NAME = fs.readFileSync(NAME_FILE, 'utf8').trim(); }
 catch {
-  const adj  = ['Swift','Bright','Cool','Fast','Sharp','Bold','Clear'];
+  const adj  = ['Swyft','Bright','Cool','Fast','Sharp','Bold','Clear'];
   const noun = ['Falcon','Tiger','Panda','Eagle','Fox','Wolf','Hawk'];
   DEVICE_NAME = adj[Math.floor(Math.random()*adj.length)] + ' ' +
                 noun[Math.floor(Math.random()*noun.length)];
