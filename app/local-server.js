@@ -86,7 +86,7 @@ const NAME_FILE = path.join(TMP, 'swyft_device_name_v2.txt');
 let DEVICE_NAME;
 try { DEVICE_NAME = fs.readFileSync(NAME_FILE, 'utf8').trim(); }
 catch {
-  const adj  = ['Swyft','Bright','Cool','Fast','Sharp','Bold','Clear'];
+  const adj  = ['Swift','Bright','Cool','Fast','Sharp','Bold','Clear'];
   const noun = ['Falcon','Tiger','Panda','Eagle','Fox','Wolf','Hawk'];
   DEVICE_NAME = adj[Math.floor(Math.random()*adj.length)] + ' ' +
                 noun[Math.floor(Math.random()*noun.length)];
@@ -605,4 +605,61 @@ signalServer.listen(SIGNAL_PORT, '0.0.0.0', () => {
 // Start UDP multicast discovery immediately — runs in parallel with TCP binding
 startDiscovery();
 
-module.exports = { localServer, signalServer };
+// ── /session-response — called by the PHONE when user taps Accept/Decline ──────
+// Replaces the polling pattern. Phone POSTs { sessionId, accepted, senderIP }
+// to http://<desktop-ip>:53317/session-response. Desktop resolves the waiting
+// promise in sendToPeer() immediately — no polling, no threading issues.
+
+const sessionResponseResolvers = new Map(); // sessionId → { resolve, reject }
+
+localApp.post('/session-response', (req, res) => {
+  const { sessionId, accepted } = req.body || {};
+  console.log('[session-response] sessionId:', sessionId, 'accepted:', accepted);
+  if (!sessionId) return res.status(400).json({ message: 'Missing sessionId' });
+
+  const resolver = sessionResponseResolvers.get(sessionId);
+  if (resolver) {
+    sessionResponseResolvers.delete(sessionId);
+    resolver(!!accepted);
+  }
+  io.emit(accepted ? 'session-accepted-local' : 'session-declined-local', { sessionId });
+  res.json({ ok: true });
+});
+
+// Called by sendToPeer()-equivalent in local.html via a helper exposed on the server.
+// Returns a Promise<boolean> that resolves when the phone POSTs /session-response.
+function waitForPhoneResponse(sessionId, timeoutMs = 35000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      sessionResponseResolvers.delete(sessionId);
+      reject(new Error('timeout'));
+    }, timeoutMs);
+
+    sessionResponseResolvers.set(sessionId, (accepted) => {
+      clearTimeout(timer);
+      resolve(accepted);
+    });
+  });
+}
+
+// Cancel a waiting resolver (e.g. user cancelled on desktop side)
+function cancelPhoneResponseWait(sessionId) {
+  const r = sessionResponseResolvers.get(sessionId);
+  if (r) { sessionResponseResolvers.delete(sessionId); r(false); }
+}
+
+// Expose a REST endpoint so local.html can register a wait and receive the result
+// via a long-poll. This keeps the browser from having to maintain a WebSocket
+// purely for this — it just does a single long-poll fetch.
+localApp.get('/wait-for-response', async (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ message: 'Missing sessionId' });
+  try {
+    const accepted = await waitForPhoneResponse(sessionId, 35000);
+    res.json({ accepted });
+  } catch (_) {
+    res.json({ accepted: false, timedOut: true });
+  }
+});
+
+module.exports = { localServer, signalServer, cancelPhoneResponseWait };

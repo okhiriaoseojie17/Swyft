@@ -371,8 +371,9 @@
   const LOCAL_URL  = 'http://localhost:53317';
   const SIGNAL_URL = 'http://localhost:3001';
 
-  let MY_NAME = 'This Device';
-  let MY_ID   = '';
+  let MY_NAME   = 'This Device';
+  let MY_ID     = '';
+  let MY_LAN_IP = '';
 
   async function loadDeviceIdentity() {
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -590,6 +591,9 @@
         port:        53317,
         protocol:    'http',
         download:    true,
+        // Included so the phone knows our IP even if expo-http-server
+        // doesn't expose remoteAddress. Phone uses this to POST /session-response.
+        senderIP:    MY_LAN_IP,
       },
       files: {
         [fileId]: {
@@ -632,48 +636,34 @@
     const token       = tokens[fileId];
     const peerBaseUrl = peer.baseUrl || `http://${peer.ip}:${peer.port || 53317}`;
 
-    // ── Poll /transfer-status until phone accepts or declines ────
-    // /prepare-upload returns immediately (status:'pending') so expo-http-server's
-    // single thread is freed. We poll here until the user taps Accept/Decline.
+    // ── Wait for phone to POST /session-response to the desktop ───────────────
+    // Old: desktop polled phone's /transfer-status. Broken because expo-http-server
+    // is single-threaded — while it handles one request, all others queue up, and
+    // query strings get stripped so the sessionId is invisible.
+    //
+    // New (push model):
+    //   1. Phone gets /prepare-upload → shows Accept/Decline UI
+    //   2. User taps → phone POSTs { sessionId, accepted } to desktop :53317/session-response
+    //   3. Desktop's /wait-for-response long-poll resolves immediately
     if (sessionRes.status === 'pending') {
       showStatus(`Waiting for ${peer.alias} to accept…`, 'info');
-      const deadline = Date.now() + 35000;
-      let decided = false;
-      while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 1000));
-        if (isCancelled) {
+      abortCtrl = new AbortController();
+      try {
+        const waitRes  = await fetch(
+          `${LOCAL_URL}/wait-for-response?sessionId=${encodeURIComponent(sessionId)}`,
+          { signal: abortCtrl.signal }
+        );
+        const waitData = await waitRes.json();
+        if (isCancelled) return;
+        if (waitData.timedOut || !waitData.accepted) {
+          showStatus(waitData.timedOut
+            ? `❌ No response from ${peer.alias} — timed out`
+            : '❌ Transfer declined', 'error');
           if (card) card.classList.remove('connecting');
           return;
         }
-        try {
-          // Send sessionId three ways: query param + header + body (POST).
-          // expo-http-server strips query strings on some versions so this
-          // guarantees the phone always sees the sessionId.
-          const statusRes = await fetch(
-            `${peerBaseUrl}/transfer-status?sessionId=${encodeURIComponent(sessionId)}`,
-            {
-              method:  'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Session-Id': sessionId,
-              },
-              body: JSON.stringify({ sessionId }),
-            }
-          );
-          const statusData = await statusRes.json();
-          if (statusData.status === 'accepted') { decided = true; break; }
-          if (statusData.status === 'declined') {
-            showStatus('❌ Transfer declined', 'error');
-            if (card) card.classList.remove('connecting');
-            return;
-          }
-          // status === 'pending' — keep polling
-        } catch (_) {
-          // network blip — keep polling
-        }
-      }
-      if (!decided) {
-        showStatus('❌ No response from ' + peer.alias + ' — timed out', 'error');
+      } catch (err) {
+        if (!isCancelled) showStatus('❌ Connection lost while waiting for response', 'error');
         if (card) card.classList.remove('connecting');
         return;
       }
@@ -878,6 +868,7 @@
     initSocket();
     if (window.swyftApp?.getLocalIP) {
       window.swyftApp.getLocalIP().then(ip => {
+        MY_LAN_IP = ip;
         document.getElementById('myDeviceIP').textContent = ip + ':53317';
       });
     }

@@ -45,10 +45,11 @@ import {
 export { SWYFT_PORT as SERVER_PORT };
 
 export interface TransferRequest {
-  sessionId: string;
-  from:      string;
-  fromId:    string;
-  files:     { id: string; fileName: string; size: number; fileType: string }[];
+  sessionId:     string;
+  from:          string;
+  fromId:        string;
+  senderBaseUrl: string;   // http://<sender-ip>:<port> — phone calls this to report decision
+  files:         { id: string; fileName: string; size: number; fileType: string }[];
 }
 
 export interface LocalServerCallbacks {
@@ -221,36 +222,30 @@ export class LocalServer {
         for (const f of fileList) {
           const token = Math.random().toString(36).slice(2);
           tokens.set(f.id, token);
-          files.push({
-            id:       f.id,
-            fileName: f.fileName,
-            size:     f.size,
-            fileType: f.fileType,
-          });
+          files.push({ id: f.id, fileName: f.fileName, size: f.size, fileType: f.fileType });
         }
 
+        // Derive sender IP so we can POST /session-response back to the desktop.
+        // expo-http-server exposes remoteAddress under various field names by version.
+        // The desktop also sends its own IP in body.info.senderIP as a guaranteed fallback.
+        const anyReq        = req as any;
+        const senderIP      = anyReq.remoteAddress || anyReq.remoteAddr ||
+                              anyReq.clientIp      || anyReq.ip ||
+                              (body.info as any).senderIP || '';
+        const senderPort    = body.info.port || SWYFT_PORT;
+        const senderBaseUrl = senderIP ? `http://${senderIP}:${senderPort}` : '';
+
         const session: PendingSession = {
-          req: {
-            sessionId,
-            from:   body.info.alias,
-            fromId: body.info.fingerprint,
-            files,
-          },
+          req: { sessionId, from: body.info.alias, fromId: body.info.fingerprint, senderBaseUrl, files },
           accepted: null,
           tokens,
         };
 
         this.sessions.set(sessionId, session);
-
-        // Show incoming request UI — user will tap Accept or Decline
         this.cb.onTransferRequest(session.req);
 
-        console.log('[LocalServer] /prepare-upload returning pending for session:', sessionId);
-        return json(200, {
-          sessionId,
-          status: 'pending',
-          files: Object.fromEntries(tokens),
-        });
+        console.log('[LocalServer] /prepare-upload pending, senderBaseUrl:', senderBaseUrl);
+        return json(200, { sessionId, status: 'pending', files: Object.fromEntries(tokens) });
       } catch (err: any) {
         console.warn('[LocalServer] /prepare-upload error:', err.message);
         return json(400, { message: err.message });
@@ -369,11 +364,31 @@ export class LocalServer {
 
   respondToSession(sessionId: string, accepted: boolean): void {
     const session = this.sessions.get(sessionId);
-    if (session) {
-      session.accepted = accepted;
-      console.log('[LocalServer] session', sessionId, accepted ? 'ACCEPTED' : 'DECLINED');
-    } else {
+    if (!session) {
       console.warn('[LocalServer] respondToSession — session not found:', sessionId);
+      return;
+    }
+    session.accepted = accepted;
+    console.log('[LocalServer] session', sessionId, accepted ? 'ACCEPTED' : 'DECLINED');
+
+    // Push the decision back to the sender immediately.
+    // For desktop→phone transfers the sender is an Express server that has a
+    // /session-response endpoint and a /wait-for-response long-poll waiting.
+    // This replaces the old poll-from-desktop pattern entirely.
+    const url = session.req.senderBaseUrl;
+    if (url) {
+      fetch(`${url}/session-response`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ sessionId, accepted }),
+      }).then(() => {
+        console.log('[LocalServer] /session-response posted to', url);
+      }).catch((err: any) => {
+        console.warn('[LocalServer] /session-response failed:', err.message);
+        // Non-fatal: desktop will time out gracefully and show an error.
+      });
+    } else {
+      console.warn('[LocalServer] no senderBaseUrl — cannot push session-response');
     }
   }
 }
