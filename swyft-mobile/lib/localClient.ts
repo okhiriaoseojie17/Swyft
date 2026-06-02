@@ -7,9 +7,9 @@
  *  1. /prepare-upload now returns status:'pending' immediately — client must
  *     poll GET /transfer-status until 'accepted' or 'declined' before uploading
  *  2. File upload changed from BINARY_CONTENT uploadAsync → base64 fetch POST
- *     because expo-http-server (Kotlin) receives body as String — binary gets
- *     corrupted. Base64 + text/plain is the only safe transport.
  *  3. Timeout on prepare-upload reduced to 10s (it returns instantly now)
+ *  4. BUGFIX: poll interval reduced 1000ms → 400ms so acceptance is detected
+ *     in <0.5s instead of up to ~1s (removes part of the 20-30s lag)
  */
 
 import * as FileSystem from 'expo-file-system';
@@ -37,8 +37,6 @@ export class LocalClient {
     this.myFingerprint = myFingerprint;
     this.myIP          = myIP;
   }
-
-  // ── Send one or more files to a peer ─────────────────────────────────────
 
   async sendFiles(
     peer:  SwyftPeer,
@@ -76,7 +74,7 @@ export class LocalClient {
     let prepareData: any;
     try {
       const ctrl  = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);  // 10s — it returns instantly
+      const timer = setTimeout(() => ctrl.abort(), 10000);
       const res   = await fetch(`${peer.baseUrl}/prepare-upload`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -101,15 +99,16 @@ export class LocalClient {
       let decided    = false;
 
       while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 400));  // BUGFIX: was 1000ms
 
         try {
           const ctrl   = new AbortController();
-          setTimeout(() => ctrl.abort(), 5000);
+          const t      = setTimeout(() => ctrl.abort(), 5000);
           const res    = await fetch(
             `${peer.baseUrl}/transfer-status?sessionId=${encodeURIComponent(sessionId)}`,
             { signal: ctrl.signal }
           );
+          clearTimeout(t);
           const data   = await res.json();
 
           if (data.status === 'accepted') { decided = true; break; }
@@ -143,8 +142,6 @@ export class LocalClient {
     }
   }
 
-  // ── Cancel a session ──────────────────────────────────────────────────────
-
   async cancelSession(peer: SwyftPeer, sessionId: string): Promise<void> {
     try {
       await fetch(`${peer.baseUrl}/cancel`, {
@@ -154,12 +151,6 @@ export class LocalClient {
       });
     } catch (_) {}
   }
-
-  // ── Private: upload a file encoded as base64 ──────────────────────────────
-  //
-  // expo-http-server (Kotlin) receives the HTTP body via request.content()
-  // which returns a Java String. Raw binary bytes get corrupted in this
-  // conversion. Sending base64 as text/plain is the only safe approach.
 
   private async _uploadFileAsBase64(
     baseUrl:   string,
@@ -172,13 +163,10 @@ export class LocalClient {
     try {
       cb.onProgress(fileId, 0, file.size);
 
-      // Read file as base64 string
       const base64 = await FileSystem.readAsStringAsync(file.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      // POST base64 string as text/plain
-      // Server receives clean ASCII string and writes it with Base64 encoding
       const res = await fetch(
         `${baseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
         {

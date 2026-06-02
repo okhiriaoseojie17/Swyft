@@ -15,6 +15,12 @@
  *   When user taps Accept, /transfer-status returns status:'accepted'.
  *   Desktop then sends the file via POST /upload — server thread is free.
  *
+ * BUGFIX (this version):
+ *   parseQueryParams() is now bulletproof — it checks paramsJson, params object,
+ *   cookiesJson, AND manually parses from path/url/originalUrl. Previous version
+ *   silently returned {} on some expo-http-server versions, making /transfer-status
+ *   return 400 forever → desktop hung on "waiting to accept" even after Accept tap.
+ *
  * Endpoints:
  *   GET  /info                          → device info
  *   POST /prepare-upload                → registers session, returns pending immediately
@@ -71,30 +77,57 @@ function json(statusCode: number, data: object): HttpResponse {
 
 /**
  * Parse query params from expo-http-server RequestEvent.
- * Tries paramsJson, then cookiesJson, then manual path parsing —
- * because different expo-http-server versions route query params differently.
+ *
+ * BULLETPROOF VERSION — different expo-http-server versions expose query params
+ * in DIFFERENT places. We try every known location in order:
+ *   1. req.paramsJson      (string JSON)   — most versions
+ *   2. req.params          (object)        — some forks
+ *   3. req.cookiesJson     (string JSON)   — misrouted on a few versions
+ *   4. manual parse from req.path / req.url / req.originalUrl
+ *
+ * The OLD version returned {} when 1–3 failed AND req.path had no query string,
+ * which made /transfer-status return 400 forever → the desktop hung on
+ * "waiting for phone to accept" even after the user tapped Accept.
  */
 function parseQueryParams(req: RequestEvent): Record<string, string> {
+  const anyReq = req as any;
+
+  // 1. paramsJson (string)
   try {
     const p = JSON.parse(req.paramsJson || '{}');
-    if (p && Object.keys(p).length > 0) return p;
+    if (p && typeof p === 'object' && Object.keys(p).length > 0) return p;
   } catch (_) {}
 
+  // 2. params as a direct object (some forks)
+  try {
+    if (anyReq.params && typeof anyReq.params === 'object' && Object.keys(anyReq.params).length > 0) {
+      return anyReq.params;
+    }
+  } catch (_) {}
+
+  // 3. cookiesJson (misrouted on a few versions)
   try {
     const c = JSON.parse(req.cookiesJson || '{}');
-    if (c && Object.keys(c).length > 0) return c;
+    if (c && typeof c === 'object' && Object.keys(c).length > 0) return c;
   } catch (_) {}
 
+  // 4. Manual parse from any available URL-ish field
   try {
-    const qIdx = req.path.indexOf('?');
-    if (qIdx !== -1) {
-      const qs = req.path.slice(qIdx + 1);
-      return Object.fromEntries(
-        qs.split('&').map(pair => {
-          const [k, v] = pair.split('=');
-          return [decodeURIComponent(k || ''), decodeURIComponent(v || '')];
+    const candidates = [anyReq.path, anyReq.url, anyReq.originalUrl, anyReq.uri];
+    for (const cand of candidates) {
+      if (typeof cand !== 'string') continue;
+      const qIdx = cand.indexOf('?');
+      if (qIdx === -1) continue;
+      const qs = cand.slice(qIdx + 1);
+      const out = Object.fromEntries(
+        qs.split('&').filter(Boolean).map(pair => {
+          const eq = pair.indexOf('=');
+          const k  = eq === -1 ? pair : pair.slice(0, eq);
+          const v  = eq === -1 ? ''   : pair.slice(eq + 1);
+          return [decodeURIComponent(k), decodeURIComponent(v)];
         })
       );
+      if (Object.keys(out).length > 0) return out;
     }
   } catch (_) {}
 
@@ -146,7 +179,6 @@ export class LocalServer {
 
     // ── POST /prepare-upload ──────────────────────────────────────
     // Returns IMMEDIATELY with status:'pending' — does NOT block.
-    // This keeps the server thread free for the subsequent /upload request.
     route('/prepare-upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
         console.log('[LocalServer] /prepare-upload received');
@@ -184,7 +216,6 @@ export class LocalServer {
         // Show incoming request UI — user will tap Accept or Decline
         this.cb.onTransferRequest(session.req);
 
-        // Return immediately — desktop polls /transfer-status
         console.log('[LocalServer] /prepare-upload returning pending for session:', sessionId);
         return json(200, {
           sessionId,
@@ -198,12 +229,17 @@ export class LocalServer {
     });
 
     // ── GET /transfer-status ──────────────────────────────────────
-    // Desktop polls this after receiving status:'pending' from /prepare-upload.
-    // Returns instantly — no blocking.
     route('/transfer-status', 'GET', async (req: RequestEvent): Promise<HttpResponse> => {
+      // DEBUG: confirm where params actually arrive on YOUR expo-http-server version
+      console.log('[LocalServer] /transfer-status RAW',
+        'paramsJson:', req.paramsJson,
+        'cookiesJson:', req.cookiesJson,
+        'path:', (req as any).path,
+        'url:', (req as any).url);
+
       const params    = parseQueryParams(req);
       const sessionId = params.sessionId;
-      console.log('[LocalServer] /transfer-status polled for session:', sessionId);
+      console.log('[LocalServer] /transfer-status parsed sessionId:', sessionId);
 
       if (!sessionId) return json(400, { message: 'Missing sessionId' });
 
@@ -220,9 +256,6 @@ export class LocalServer {
     });
 
     // ── POST /upload ──────────────────────────────────────────────
-    // Desktop sends file as base64-encoded text/plain body.
-    // Received as a clean string by Kotlin's request.content().
-    // Query params: sessionId, fileId, token
     route('/upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
         const params    = parseQueryParams(req);
@@ -234,7 +267,8 @@ export class LocalServer {
         console.log('[LocalServer] /upload body length:', req.body?.length ?? 'null');
 
         if (!sessionId || !fileId || !token) {
-          console.warn('[LocalServer] /upload missing params. paramsJson:', req.paramsJson);
+          console.warn('[LocalServer] /upload missing params. paramsJson:', req.paramsJson,
+                       'path:', (req as any).path);
           return json(400, { message: 'Missing sessionId, fileId or token' });
         }
 
@@ -252,7 +286,6 @@ export class LocalServer {
         const fileInfo = session.req.files.find(f => f.id === fileId);
         if (!fileInfo) return json(400, { message: 'Unknown file' });
 
-        // Sanitise filename and prefix with sessionId to prevent collisions
         const safeName = fileInfo.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
         const dest     = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
 
@@ -263,11 +296,9 @@ export class LocalServer {
 
         console.log('[LocalServer] file saved:', dest);
 
-        // Clean up token for this file
         session.tokens.delete(fileId);
         this.cb.onTransferComplete(sessionId, fileId, dest);
 
-        // Delete session only when ALL files received
         if (session.tokens.size === 0) {
           this.sessions.delete(sessionId);
         }

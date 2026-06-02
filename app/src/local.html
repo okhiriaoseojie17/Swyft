@@ -473,7 +473,17 @@
       showStatus('✓ File received — saved to Downloads', 'success');
     });
 
-    socket.on('transfer-cancelled-local', ({ sessionId }) => {
+     socket.on('transfer-cancelled-local', ({ sessionId }) => {
+      // BUGFIX: dismiss the incoming-request sheet if the cancel is for a
+      // session the user hasn't accepted/declined yet. Previously this only
+      // handled an already-active (accepted) session, so a pending prompt
+      // stayed on screen and could still be accepted after the sender cancelled.
+      if (pendingSession && pendingSession.sessionId === sessionId) {
+        document.getElementById('requestOverlay').classList.remove('visible');
+        pendingSession = null;
+        showStatus('Sender cancelled the request', 'info');
+        return;
+      }
       if (activeSession === sessionId) {
         showStatus('❌ Sender cancelled', 'error');
         closeProgress();

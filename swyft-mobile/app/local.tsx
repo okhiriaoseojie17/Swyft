@@ -98,8 +98,14 @@ export default function LocalScreen() {
       },
 
       onRemoteCancel: () => {
+        // BUGFIX: also dismiss the incoming-request prompt if it's still showing.
+        // Previously, if the sender cancelled before the user tapped Accept/Decline,
+        // the request sheet stayed visible and could still be acted on.
+        setReqVisible(false);
+        setReqData(null);
         showStatus('❌ Transfer cancelled by other device', 'error');
         setProgVis(false);
+        setSending(null);
       },
 
       onSendComplete: () => {
