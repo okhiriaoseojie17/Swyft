@@ -22,9 +22,10 @@ import {
 } from './protocol';
 
 export interface SendCallbacks {
-  onProgress: (fileId: string, sent: number, total: number) => void;
-  onComplete: (fileId: string) => void;
-  onError:    (msg: string)    => void;
+  onProgress:  (fileId: string, sent: number, total: number) => void;
+  onComplete:  (fileId: string) => void;
+  onError:     (msg: string)    => void;
+  onSessionId: (sessionId: string) => void;  // called as soon as sessionId is known
 }
 
 export class LocalClient {
@@ -92,6 +93,8 @@ export class LocalClient {
     }
 
     const { sessionId, files: tokens, status } = prepareData;
+    // Notify caller immediately so it can cancel if needed
+    cb.onSessionId(sessionId);
 
     // 3. If pending, poll /transfer-status until accepted or declined (35s max)
     if (status === 'pending') {

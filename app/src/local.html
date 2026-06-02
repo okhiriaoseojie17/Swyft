@@ -475,10 +475,9 @@
 
      socket.on('transfer-cancelled-local', ({ sessionId }) => {
       // BUGFIX: dismiss the incoming-request sheet if the cancel is for a
-      // session the user hasn't accepted/declined yet. Previously this only
-      // handled an already-active (accepted) session, so a pending prompt
-      // stayed on screen and could still be accepted after the sender cancelled.
-      if (pendingSession && pendingSession.sessionId === sessionId) {
+      // session the user hasn't accepted/declined yet. Also handles the case
+      // where the phone cancelled before /prepare-upload completed (sessionId=null).
+      if (!sessionId || (pendingSession && pendingSession.sessionId === sessionId)) {
         document.getElementById('requestOverlay').classList.remove('visible');
         pendingSession = null;
         showStatus('Sender cancelled the request', 'info');
@@ -647,9 +646,19 @@
           return;
         }
         try {
-          const statusRes  = await fetch(
+          // Send sessionId three ways: query param + header + body (POST).
+          // expo-http-server strips query strings on some versions so this
+          // guarantees the phone always sees the sessionId.
+          const statusRes = await fetch(
             `${peerBaseUrl}/transfer-status?sessionId=${encodeURIComponent(sessionId)}`,
-            { signal: abortCtrl || undefined }
+            {
+              method:  'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Session-Id': sessionId,
+              },
+              body: JSON.stringify({ sessionId }),
+            }
           );
           const statusData = await statusRes.json();
           if (statusData.status === 'accepted') { decided = true; break; }

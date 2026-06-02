@@ -86,7 +86,7 @@ const NAME_FILE = path.join(TMP, 'swyft_device_name_v2.txt');
 let DEVICE_NAME;
 try { DEVICE_NAME = fs.readFileSync(NAME_FILE, 'utf8').trim(); }
 catch {
-  const adj  = ['Swift','Bright','Cool','Fast','Sharp','Bold','Clear'];
+  const adj  = ['Swyft','Bright','Cool','Fast','Sharp','Bold','Clear'];
   const noun = ['Falcon','Tiger','Panda','Eagle','Fox','Wolf','Hawk'];
   DEVICE_NAME = adj[Math.floor(Math.random()*adj.length)] + ' ' +
                 noun[Math.floor(Math.random()*noun.length)];
@@ -258,9 +258,18 @@ localApp.post('/upload', express.text({ type: '*/*', limit: '2gb' }), async (req
 
 // POST /cancel
 localApp.post('/cancel', (req, res) => {
-  const { sessionId } = req.body || {};
-  sessions.delete(sessionId);
-  io.emit('transfer-cancelled-local', { sessionId });
+  // sessionId may arrive in JSON body OR as a query param (mobile sends both)
+  const sessionId = req.body?.sessionId || req.query?.sessionId;
+  if (sessionId) {
+    sessions.delete(sessionId);
+    // Emit regardless of whether session was pending or active —
+    // the desktop UI handler dismisses whichever overlay is showing.
+    io.emit('transfer-cancelled-local', { sessionId });
+  } else {
+    // Sender cancelled without a sessionId (pre-prepare-upload abort):
+    // broadcast a generic cancel so the UI can clean up any pending prompt.
+    io.emit('transfer-cancelled-local', { sessionId: null });
+  }
   res.json({ message: 'cancelled' });
 });
 

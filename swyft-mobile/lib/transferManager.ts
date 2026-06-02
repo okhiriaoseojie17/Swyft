@@ -116,6 +116,9 @@ export class TransferManager {
 
     this.activePeer = peer;
     this.sendStart  = Date.now();
+    // Generate a client-side sessionId so we can cancel before /prepare-upload returns.
+    // The real sessionId comes back from /prepare-upload — we overwrite it then.
+    this.activeSession = '__pending__';
 
     const totalSize = files.reduce((s, f) => s + f.size, 0);
     let   sentTotal = 0;
@@ -124,6 +127,9 @@ export class TransferManager {
       peer,
       files.map(f => ({ ...f, mimeType: f.mimeType || 'application/octet-stream' })),
       {
+        onSessionId: (sid) => {
+          this.activeSession = sid;  // now cancelTransfer() can POST /cancel for real
+        },
         onProgress: (_fileId, sent, total) => {
           sentTotal = sent;   // single-file simple tracking
           const elapsed = (Date.now() - this.sendStart) / 1000 || 0.001;

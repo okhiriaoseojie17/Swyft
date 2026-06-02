@@ -49,7 +49,7 @@ async function getAlias(): Promise<string> {
   const KEY = 'swyft_device_name_v2';
   let name = await AsyncStorage.getItem(KEY);
   if (!name) {
-    const adj  = ['Swift','Bright','Cool','Fast','Sharp','Bold','Clear'];
+    const adj  = ['Swyft','Bright','Cool','Fast','Sharp','Bold','Clear'];
     const noun = ['Falcon','Tiger','Panda','Eagle','Fox','Wolf','Hawk'];
     name = adj[Math.floor(Math.random()*adj.length)] + ' ' +
            noun[Math.floor(Math.random()*noun.length)];

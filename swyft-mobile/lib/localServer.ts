@@ -78,16 +78,17 @@ function json(statusCode: number, data: object): HttpResponse {
 /**
  * Parse query params from expo-http-server RequestEvent.
  *
- * BULLETPROOF VERSION — different expo-http-server versions expose query params
+ * BULLETPROOF VERSION v2 — different expo-http-server versions expose query params
  * in DIFFERENT places. We try every known location in order:
  *   1. req.paramsJson      (string JSON)   — most versions
  *   2. req.params          (object)        — some forks
  *   3. req.cookiesJson     (string JSON)   — misrouted on a few versions
  *   4. manual parse from req.path / req.url / req.originalUrl
+ *   5. request headers     (X-Session-Id etc.) — desktop sends these as fallback
+ *   6. JSON request body   — desktop sends sessionId in body as last resort
  *
- * The OLD version returned {} when 1–3 failed AND req.path had no query string,
- * which made /transfer-status return 400 forever → the desktop hung on
- * "waiting for phone to accept" even after the user tapped Accept.
+ * The desktop NOW sends sessionId as query param + X-Session-Id header + JSON body
+ * so at least one of these paths is guaranteed to work regardless of expo-http-server version.
  */
 function parseQueryParams(req: RequestEvent): Record<string, string> {
   const anyReq = req as any;
@@ -128,6 +129,34 @@ function parseQueryParams(req: RequestEvent): Record<string, string> {
         })
       );
       if (Object.keys(out).length > 0) return out;
+    }
+  } catch (_) {}
+
+  // 5. Request headers — desktop sends X-Session-Id as a redundant fallback.
+  //    Build a partial params object from known header mappings.
+  try {
+    const headers: Record<string, string> = anyReq.headers || anyReq.requestHeaders || {};
+    const result: Record<string, string> = {};
+    const sid = headers['x-session-id'] || headers['X-Session-Id'];
+    if (sid) result['sessionId'] = sid;
+    const fid = headers['x-file-id'] || headers['X-File-Id'];
+    if (fid) result['fileId'] = fid;
+    const tok = headers['x-token'] || headers['X-Token'];
+    if (tok) result['token'] = tok;
+    if (Object.keys(result).length > 0) return result;
+  } catch (_) {}
+
+  // 6. JSON body — desktop sends { sessionId } in the POST body as a last resort.
+  try {
+    if (req.body && typeof req.body === 'string' && req.body.trim().startsWith('{')) {
+      const parsed = JSON.parse(req.body);
+      if (parsed && typeof parsed === 'object') {
+        const result: Record<string, string> = {};
+        if (parsed.sessionId) result['sessionId'] = String(parsed.sessionId);
+        if (parsed.fileId)    result['fileId']    = String(parsed.fileId);
+        if (parsed.token)     result['token']     = String(parsed.token);
+        if (Object.keys(result).length > 0) return result;
+      }
     }
   } catch (_) {}
 
@@ -228,8 +257,10 @@ export class LocalServer {
       }
     });
 
-    // ── GET /transfer-status ──────────────────────────────────────
-    route('/transfer-status', 'GET', async (req: RequestEvent): Promise<HttpResponse> => {
+    // ── GET|POST /transfer-status ─────────────────────────────────
+    // Desktop sends sessionId three ways: query param, X-Session-Id header,
+    // and JSON body. We accept POST so the body path works too.
+    route('/transfer-status', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       // DEBUG: confirm where params actually arrive on YOUR expo-http-server version
       console.log('[LocalServer] /transfer-status RAW',
         'paramsJson:', req.paramsJson,
