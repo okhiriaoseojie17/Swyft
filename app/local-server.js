@@ -60,7 +60,13 @@ localApp.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
-localApp.use(express.json({ limit: '10mb' }));
+// Apply JSON parser to every route EXCEPT /upload — /upload uses its own
+// express.text() parser with a 2 GB limit. If the global JSON parser runs
+// first on a large upload it will reject it with 413 before the route fires.
+localApp.use((req, res, next) => {
+  if (req.path === '/upload') return next();
+  express.json({ limit: '10mb' })(req, res, next);
+});
 localApp.use(express.static(path.join(__dirname, 'src')));
 
 signalApp.use((req, res, next) => {
@@ -86,7 +92,7 @@ const NAME_FILE = path.join(TMP, 'swyft_device_name_v2.txt');
 let DEVICE_NAME;
 try { DEVICE_NAME = fs.readFileSync(NAME_FILE, 'utf8').trim(); }
 catch {
-  const adj  = ['Swyft','Bright','Cool','Fast','Sharp','Bold','Clear'];
+  const adj  = ['Swift','Bright','Cool','Fast','Sharp','Bold','Clear'];
   const noun = ['Falcon','Tiger','Panda','Eagle','Fox','Wolf','Hawk'];
   DEVICE_NAME = adj[Math.floor(Math.random()*adj.length)] + ' ' +
                 noun[Math.floor(Math.random()*noun.length)];

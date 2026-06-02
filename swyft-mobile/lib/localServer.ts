@@ -284,17 +284,23 @@ export class LocalServer {
     // ── POST /upload ──────────────────────────────────────────────
     route('/upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
-        const params    = parseQueryParams(req);
-        const sessionId = params.sessionId;
-        const fileId    = params.fileId;
-        const token     = params.token;
+        // Read params from HEADERS first — the desktop sends X-Session-Id, X-File-Id,
+        // X-Token as headers because expo-http-server strips query strings on many versions.
+        // Fall back to parseQueryParams as a secondary safety net.
+        const anyReq  = req as any;
+        const headers: Record<string,string> = anyReq.headers || anyReq.requestHeaders || {};
+        const paramsFallback = parseQueryParams(req);
+
+        const sessionId = headers['x-session-id'] || headers['X-Session-Id'] || paramsFallback.sessionId;
+        const fileId    = headers['x-file-id']    || headers['X-File-Id']    || paramsFallback.fileId;
+        const token     = headers['x-token']      || headers['X-Token']      || paramsFallback.token;
+        const fileName  = headers['x-file-name']  || headers['X-File-Name']  || '';
 
         console.log('[LocalServer] /upload sessionId:', sessionId, 'fileId:', fileId);
         console.log('[LocalServer] /upload body length:', req.body?.length ?? 'null');
 
         if (!sessionId || !fileId || !token) {
-          console.warn('[LocalServer] /upload missing params. paramsJson:', req.paramsJson,
-                       'path:', (req as any).path);
+          console.warn('[LocalServer] /upload missing params. headers:', JSON.stringify(headers));
           return json(400, { message: 'Missing sessionId, fileId or token' });
         }
 

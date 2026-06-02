@@ -84,10 +84,17 @@ export default function LocalScreen() {
       },
 
       onTransferComplete: (fileName, uri) => {
+        // Strip the sessionId prefix the server adds to the cache filename
+        // e.g. "abc123_myfile.pdf" → "myfile.pdf" for display
+        const displayName = fileName.includes('_')
+          ? fileName.substring(fileName.indexOf('_') + 1)
+          : fileName;
+        setProgPct(100);
+        setProgStats('File saved — tap below to share');
         setProgDone(true);
         setSavedUri(uri);
-        setSavedName(fileName);
-        setSavedIsZip(fileName.endsWith('.zip'));
+        setSavedName(displayName);
+        setSavedIsZip(displayName.endsWith('.zip'));
         showStatus('✓ File received!', 'success');
       },
 
@@ -203,8 +210,19 @@ export default function LocalScreen() {
     if (accepted) {
       setProgVerb('Receiving');
       setProgFile(reqData.files[0]?.fileName || 'file');
-      setProgPct(0); setProgStats('Starting…'); setProgDone(false);
+      setProgPct(0); setProgStats('Receiving file…'); setProgDone(false);
       setProgVis(true);
+
+      // expo-http-server gives no streaming progress events — the phone goes
+      // straight from 0% to done. Animate the bar to 85% over ~2s so it
+      // doesn't look frozen, then onTransferComplete snaps it to 100%.
+      const steps = 17;
+      let step = 0;
+      const iv = setInterval(() => {
+        step++;
+        setProgPct(Math.round((step / steps) * 85));
+        if (step >= steps) clearInterval(iv);
+      }, 120);
     }
     setReqData(null);
   }

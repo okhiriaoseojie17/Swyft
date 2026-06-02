@@ -702,13 +702,18 @@
       document.getElementById('progFill').style.width  = '60%';
       document.getElementById('progStats').textContent = 'Sending to phone…';
 
+      // sessionId, fileId, token sent as HEADERS not query params.
+      // expo-http-server strips query strings on many versions — headers always survive.
       const uploadRes = await fetch(
-        `${peerBaseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
+        `${peerBaseUrl}/upload`,
         {
           method:  'POST',
           headers: {
             'Content-Type': 'text/plain',
             'X-File-Name':  encodeURIComponent(selectedFile.name),
+            'X-Session-Id': sessionId,
+            'X-File-Id':    fileId,
+            'X-Token':      token,
           },
           body:   base64Body,
           signal: abortCtrl.signal,
