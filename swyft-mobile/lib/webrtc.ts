@@ -8,14 +8,31 @@ import {
   RTCPeerConnection,
   RTCIceCandidate,
   RTCSessionDescription,
-  MediaStream,
 } from 'react-native-webrtc';
 import { SIGNAL_SERVER } from './socket';
 import { Socket } from 'socket.io-client';
 
 const CHUNK_SIZE   = 256 * 1024;   // 256 KB per chunk
 const MAX_BUFFER   = 16 * 1024 * 1024;
-const LOW_WATER    = 4  * 1024 * 1024;
+
+// ── react-native-webrtc type patch ────────────────────────────────────────────
+// The package's .d.ts omits standard event handler properties and addEventListener.
+// This interface fills the gap without touching any runtime behaviour.
+interface RNRTCPeerConnection {
+  iceGatheringState: RTCIceGatheringState;
+  localDescription: RTCSessionDescriptionInit | null;
+  createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
+  createAnswer(options?: RTCAnswerOptions): Promise<RTCSessionDescriptionInit>;
+  setLocalDescription(desc: RTCSessionDescriptionInit): Promise<void>;
+  setRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void>;
+  addIceCandidate(candidate: RTCIceCandidate): Promise<void>;
+  createDataChannel(label: string, options?: RTCDataChannelInit): any;
+  close(): void;
+  // Properties the RN package forgets to declare:
+  onicecandidate:  ((event: { candidate: RTCIceCandidate | null }) => void) | null;
+  ondatachannel:   ((event: { channel: any }) => void) | null;
+  addEventListener(type: string, listener: () => void): void;
+}
 
 // ── ICE server fetcher ────────────────────────────────────────────────────────
 async function fetchIceServers(): Promise<RTCIceServer[]> {
@@ -31,22 +48,22 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
 // SENDER
 // ─────────────────────────────────────────────────────────────────────────────
 export interface SenderCallbacks {
-  onPINReady:      (pin: string)          => void;
-  onConnected:     ()                     => void;
-  onProgress:      (pct: number, speed: number, sent: number, total: number) => void;
-  onComplete:      ()                     => void;
-  onError:         (msg: string)          => void;
-  onRemoteCancel:  ()                     => void;
-  onRemoteDisconnect: ()                  => void;
+  onPINReady:         (pin: string)                                          => void;
+  onConnected:        ()                                                     => void;
+  onProgress:         (pct: number, speed: number, sent: number, total: number) => void;
+  onComplete:         ()                                                     => void;
+  onError:            (msg: string)                                          => void;
+  onRemoteCancel:     ()                                                     => void;
+  onRemoteDisconnect: ()                                                     => void;
 }
 
 export class SwyftSender {
-  private pc:          RTCPeerConnection | null = null;
-  private channel:     any                      = null;
-  private socket:      Socket;
-  private currentPIN:  string | null            = null;
-  private isCancelled  = false;
-  private isTransferring = false;
+  private pc:             RNRTCPeerConnection | null = null;
+  private channel:        any                        = null;
+  private socket:         Socket;
+  private currentPIN:     string | null              = null;
+  private isCancelled     = false;
+  private isTransferring  = false;
 
   constructor(socket: Socket, private cb: SenderCallbacks) {
     this.socket = socket;
@@ -59,11 +76,11 @@ export class SwyftSender {
     this.isTransferring = false;
 
     const iceServers = await fetchIceServers();
-    this.pc = new RTCPeerConnection({ iceServers });
+    this.pc = new RTCPeerConnection({ iceServers }) as unknown as RNRTCPeerConnection;
 
     this._setupDataChannel();
 
-    this.pc.onicecandidate = (e: any) => {
+    this.pc.onicecandidate = (e) => {
       if (e.candidate && this.currentPIN) {
         this.socket.emit('ice-candidate', { pin: this.currentPIN, candidate: e.candidate });
       }
@@ -77,7 +94,7 @@ export class SwyftSender {
     const offer = await this.pc.createOffer({});
     await this.pc.setLocalDescription(offer);
 
-    // Wait for ICE gathering to complete (same fix as desktop sender.js)
+    // Wait for ICE gathering to complete
     await new Promise<void>((resolve) => {
       if (this.pc?.iceGatheringState === 'complete') { resolve(); return; }
       const check = () => { if (this.pc?.iceGatheringState === 'complete') resolve(); };
@@ -98,7 +115,7 @@ export class SwyftSender {
 
   private async _applyAnswer(answer: any) {
     try {
-      await this.pc!.setRemoteDescription(new RTCSessionDescription(answer));
+      await this.pc!.setRemoteDescription(new RTCSessionDescription(answer) as unknown as RTCSessionDescriptionInit);
     } catch (err: any) {
       this.cb.onError('Connection error: ' + err.message);
     }
@@ -175,7 +192,7 @@ export class SwyftSender {
 
   cleanup(removeListeners = true) {
     try { this.channel?.close(); } catch (_) {}
-    try { this.pc?.close();      } catch (_) {}
+    try { (this.pc as any)?.close(); } catch (_) {}
     this.channel = null; this.pc = null; this.currentPIN = null;
     if (removeListeners) {
       this.socket.off('answer-ready');
@@ -207,17 +224,17 @@ export class SwyftSender {
 // RECEIVER
 // ─────────────────────────────────────────────────────────────────────────────
 export interface ReceiverCallbacks {
-  onConnected:    ()                                          => void;
-  onProgress:     (pct: number, speed: number, rx: number, total: number) => void;
-  onComplete:     (fileName: string, data: ArrayBuffer)      => void;
-  onError:        (msg: string)                              => void;
-  onRemoteCancel: ()                                         => void;
-  onRemoteDisconnect: ()                                     => void;
+  onConnected:        ()                                                          => void;
+  onProgress:         (pct: number, speed: number, rx: number, total: number)    => void;
+  onComplete:         (fileName: string, data: ArrayBuffer)                      => void;
+  onError:            (msg: string)                                              => void;
+  onRemoteCancel:     ()                                                          => void;
+  onRemoteDisconnect: ()                                                          => void;
 }
 
 export class SwyftReceiver {
-  private pc:      RTCPeerConnection | null = null;
-  private channel: any                      = null;
+  private pc:      RNRTCPeerConnection | null = null;
+  private channel: any                        = null;
   private socket:  Socket;
 
   constructor(socket: Socket, private cb: ReceiverCallbacks) {
@@ -228,9 +245,9 @@ export class SwyftReceiver {
     this.cleanup(false);
 
     const iceServers = await fetchIceServers();
-    this.pc = new RTCPeerConnection({ iceServers });
+    this.pc = new RTCPeerConnection({ iceServers }) as unknown as RNRTCPeerConnection;
 
-    this.pc.onicecandidate = (e: any) => {
+    this.pc.onicecandidate = (e) => {
       if (e.candidate) this.socket.emit('ice-candidate', { pin, candidate: e.candidate });
     };
 
@@ -244,12 +261,12 @@ export class SwyftReceiver {
     this.socket.emit('join-room', pin, async (response: any) => {
       if (!response.success) { this.cb.onError(response.message); return; }
 
-      await this.pc!.setRemoteDescription(response.offer);
-
+      
+      await this.pc!.setRemoteDescription(response.offer as RTCSessionDescriptionInit);
       const answer = await this.pc!.createAnswer();
       await this.pc!.setLocalDescription(answer);
 
-      // Wait for ICE gathering (same fix as desktop receiver.js)
+      // Wait for ICE gathering
       await new Promise<void>((resolve) => {
         if (this.pc?.iceGatheringState === 'complete') { resolve(); return; }
         const check = () => { if (this.pc?.iceGatheringState === 'complete') resolve(); };
@@ -265,15 +282,15 @@ export class SwyftReceiver {
   }
 
   private _setupDataChannel() {
-    this.pc!.ondatachannel = (event: any) => {
+    this.pc!.ondatachannel = (event) => {
       this.channel = event.channel;
       this.channel.binaryType = 'arraybuffer';
 
-      let meta:       any         = null;
-      let expected    = 0;
-      let received    = 0;
-      let startTime   = 0;
-      let buffers:    ArrayBuffer[] = [];
+      let meta:     any           = null;
+      let expected  = 0;
+      let received  = 0;
+      let startTime = 0;
+      let buffers:  ArrayBuffer[] = [];
 
       this.channel.onopen  = () => {};
       this.channel.onclose = () => {};
@@ -325,7 +342,7 @@ export class SwyftReceiver {
 
   cleanup(removeListeners = true) {
     try { this.channel?.close(); } catch (_) {}
-    try { this.pc?.close();      } catch (_) {}
+    try { (this.pc as any)?.close(); } catch (_) {}
     this.channel = null; this.pc = null;
     if (removeListeners) this.socket.off('ice-candidate');
   }

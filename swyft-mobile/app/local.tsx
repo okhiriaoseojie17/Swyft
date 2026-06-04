@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Modal, Alert, Platform, AppState,
+  Modal, Alert, Platform, AppState, TextInput, ActivityIndicator,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
@@ -44,6 +44,9 @@ export default function LocalScreen() {
   const [myIP,         setMyIP]       = useState('');
   const [selectedFiles, setFiles]     = useState<{ uri: string; name: string; size: number }[] | null>(null);
   const [sending,      setSending]    = useState<string | null>(null);  // peer fingerprint
+  const [manualIP,     setManualIP]   = useState('');
+  const [manualStatus, setManualStatus] = useState<{msg:string; type:'ok'|'err'|'loading'}|null>(null);
+  const [corpOpen,     setCorpOpen]   = useState(false);
   const [progVisible,  setProgVis]    = useState(false);
   const [progVerb,     setProgVerb]   = useState<'Sending' | 'Receiving'>('Sending');
   const [progFile,     setProgFile]   = useState('');
@@ -201,6 +204,54 @@ export default function LocalScreen() {
   }
 
   // ── Accept / decline incoming ─────────────────────────────────────────────
+  // ── Manual IP connect ──────────────────────────────────────────────────────
+  async function connectManualIP() {
+    let ip = manualIP.trim().replace(/^https?:\/\//i, '').split(':')[0];
+    if (!ip || !/^[\d.]+$/.test(ip)) {
+      setManualStatus({ msg: 'Enter a valid IP (e.g. 192.168.1.42)', type: 'err' });
+      return;
+    }
+    setManualStatus({ msg: `Connecting to ${ip}…`, type: 'loading' });
+    try {
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5000);
+      const res   = await fetch(`http://${ip}:53317/info`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const info  = await res.json();
+
+      // Build a peer object matching SwyftPeer shape and inject into peer list
+      const peer = {
+        alias:       info.alias       || ip,
+        version:     info.version     || '2.0',
+        deviceModel: info.deviceModel || 'Unknown',
+        deviceType:  info.deviceType  || 'desktop',
+        fingerprint: info.fingerprint || ip,
+        port:        info.port        || 53317,
+        protocol:    'http' as const,
+        download:    true,
+        ip,
+        lastSeen:    Date.now(),
+        baseUrl:     `http://${ip}:53317`,
+      };
+
+      // Merge into peers list without duplicates
+      setPeers(prev => {
+        const filtered = prev.filter(p => p.fingerprint !== peer.fingerprint && p.ip !== ip);
+        return [...filtered, peer];
+      });
+      setManualStatus({ msg: `✓ Found ${peer.alias} — tap the card to send`, type: 'ok' });
+      setManualIP('');
+    } catch (err: any) {
+      setManualStatus({
+        msg: err.name === 'AbortError'
+          ? 'Timed out — is Swyft open on that device?'
+          : 'Could not connect: ' + err.message,
+        type: 'err',
+      });
+    }
+  }
+
   function respondToRequest(accepted: boolean) {
     setReqVisible(false);
     if (!reqData) return;
@@ -345,6 +396,65 @@ export default function LocalScreen() {
           )}
         </View>
 
+        {/* ── Corporate network / manual IP connect ────────────── */}
+        <View style={styles.corpWrapper}>
+          {/* Toggle button */}
+          <TouchableOpacity
+            style={[styles.corpToggle, corpOpen && styles.corpToggleOpen]}
+            onPress={() => { setCorpOpen(o => !o); setManualStatus(null); }}
+            activeOpacity={0.8}
+          >
+            <View style={styles.corpToggleLeft}>
+              <Text style={styles.corpToggleIcon}>🏢</Text>
+              <Text style={[styles.corpToggleText, corpOpen && styles.corpToggleTextOpen]}>
+                Using a corporate network?
+              </Text>
+            </View>
+            <Text style={[styles.corpToggleArrow, corpOpen && styles.corpToggleArrowOpen]}>▼</Text>
+          </TouchableOpacity>
+
+          {/* Dropdown panel */}
+          {corpOpen && (
+            <View style={styles.corpDropdown}>
+              <Text style={styles.corpHint}>{'On managed or corporate WiFi, automatic discovery is usually blocked. Enter the other device\'s IP to connect directly.\n\nFind the IP under the scanning bar on the other device (e.g. 192.168.1.42).'}</Text>
+              <View style={styles.manualIPRow}>
+                <TextInput
+                  style={styles.manualIPInput}
+                  value={manualIP}
+                  onChangeText={setManualIP}
+                  placeholder="e.g. 192.168.1.42"
+                  placeholderTextColor="#555"
+                  keyboardType="numeric"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  onSubmitEditing={connectManualIP}
+                  returnKeyType="search"
+                />
+                <TouchableOpacity
+                  style={[styles.manualIPBtn, manualStatus?.type === 'loading' && { opacity: 0.6 }]}
+                  onPress={connectManualIP}
+                  activeOpacity={0.8}
+                  disabled={manualStatus?.type === 'loading'}
+                >
+                  {manualStatus?.type === 'loading'
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Text style={styles.manualIPBtnText}>🔍 Search</Text>
+                  }
+                </TouchableOpacity>
+              </View>
+              {manualStatus && (
+                <Text style={[styles.manualIPStatus,
+                  manualStatus.type === 'ok'      ? styles.manualOk      :
+                  manualStatus.type === 'err'     ? styles.manualErr     :
+                                                    styles.manualLoading
+                ]}>
+                  {manualStatus.msg}
+                </Text>
+              )}
+            </View>
+          )}
+        </View>
+
         {/* ── How it works note ─────────────────────────────────── */}
         <View style={styles.noteCard}>
           <Text style={styles.noteTitle}>💡 How it works</Text>
@@ -466,6 +576,41 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16,185,129,0.04)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.1)',
     borderRadius: radius.md, padding: 16, gap: 8,
   },
+  /* Corporate network toggle */
+  corpWrapper:          { marginBottom: 0 },
+  corpToggle:           {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#111', borderWidth: 1, borderColor: '#222',
+    borderRadius: 12, paddingHorizontal: 16, paddingVertical: 13,
+  },
+  corpToggleOpen:       { borderColor: '#10b981', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
+  corpToggleLeft:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  corpToggleIcon:       { fontSize: 15 },
+  corpToggleText:       { fontSize: 13, fontWeight: '600', color: '#666' },
+  corpToggleTextOpen:   { color: '#10b981' },
+  corpToggleArrow:      { fontSize: 11, color: '#666' },
+  corpToggleArrowOpen:  { color: '#10b981', transform: [{ rotate: '180deg' }] },
+  corpDropdown:         {
+    backgroundColor: '#111', borderWidth: 1, borderColor: '#10b981',
+    borderTopWidth: 0, borderBottomLeftRadius: 12, borderBottomRightRadius: 12,
+    padding: 16,
+  },
+  corpHint:             { fontSize: 12, color: '#666', lineHeight: 18, marginBottom: 12 },
+  manualIPRow:          { flexDirection: 'row', gap: 8 },
+  manualIPInput:        {
+    flex: 1, backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#333',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10,
+    color: '#fff', fontSize: 14,
+  },
+  manualIPBtn:          {
+    backgroundColor: '#10b981', borderRadius: 10,
+    paddingHorizontal: 14, paddingVertical: 10, justifyContent: 'center', alignItems: 'center',
+  },
+  manualIPBtnText:      { color: '#fff', fontWeight: '700', fontSize: 13 },
+  manualIPStatus:       { fontSize: 12, marginTop: 10 },
+  manualOk:             { color: '#10b981' },
+  manualErr:            { color: '#ef4444' },
+  manualLoading:        { color: '#888' },
   noteTitle: { fontSize: font.sm, fontWeight: '700', color: 'rgba(16,185,129,0.6)' },
   noteText:  { fontSize: font.xs, color: '#3a3a3a', lineHeight: 18 },
   overlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,.85)', justifyContent: 'flex-end' },

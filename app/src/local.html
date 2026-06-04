@@ -139,6 +139,55 @@
     .peer-sub   { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .peer-action { font-size: 12px; font-weight: 700; color: var(--green); flex-shrink: 0; }
     .peer-arrow  { font-size: 18px; color: #2a2a2a; flex-shrink: 0; }
+  /* ── Corporate network / manual IP connect ── */
+  .corp-toggle {
+    width:100%; display:flex; align-items:center; justify-content:space-between;
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:12px; padding:13px 16px; cursor:pointer;
+    font-size:13px; font-weight:600; color:var(--text2);
+    transition: border-color .2s, color .2s;
+  }
+  .corp-toggle:hover  { border-color:#333; color:var(--text); }
+  .corp-toggle.open   { border-color:var(--accent); color:var(--accent);
+                        border-bottom-left-radius:0; border-bottom-right-radius:0; }
+  .corp-toggle-left   { display:flex; align-items:center; gap:8px; }
+  .corp-toggle-icon   { font-size:15px; }
+  .corp-toggle-arrow  {
+    font-size:11px; transition:transform .25s;
+    display:inline-block; color:inherit;
+  }
+  .corp-toggle.open .corp-toggle-arrow { transform:rotate(180deg); }
+
+  .corp-dropdown {
+    display:none; background:var(--surface);
+    border:1px solid var(--accent); border-top:none;
+    border-bottom-left-radius:12px; border-bottom-right-radius:12px;
+    padding:16px;
+  }
+  .corp-dropdown.open { display:block; }
+  .corp-hint {
+    font-size:12px; color:var(--text2); line-height:1.6; margin-bottom:12px;
+  }
+  .corp-hint em { color:var(--text); font-style:normal; }
+  .manual-ip-row   { display:flex; gap:8px; }
+  .manual-ip-input {
+    flex:1; padding:10px 12px; border-radius:10px; font-size:14px;
+    background:var(--surface2); border:1px solid var(--border);
+    color:var(--text); outline:none;
+  }
+  .manual-ip-input:focus { border-color:var(--accent); }
+  .manual-ip-search-btn {
+    padding:10px 16px; border-radius:10px; font-size:13px; font-weight:600;
+    background:var(--accent); color:#fff; border:none; cursor:pointer;
+    white-space:nowrap; display:flex; align-items:center; gap:6px;
+  }
+  .manual-ip-search-btn:active  { opacity:0.8; }
+  .manual-ip-search-btn:disabled{ opacity:0.5; cursor:default; }
+  .manual-ip-status { margin-top:10px; font-size:12px; min-height:16px; }
+  .manual-ip-status.ok      { color:#10b981; }
+  .manual-ip-status.err     { color:#ef4444; }
+  .manual-ip-status.loading { color:#aaa; }
+
     .empty-card {
       background: var(--surface); border: 1px dashed #1e1e1e;
       border-radius: 14px; padding: 32px 20px; text-align: center;
@@ -299,6 +348,34 @@
         </div>
       </div>
       <div class="peers-list" id="peerList"></div>
+    </div>
+
+    <!-- ── Corporate network / manual IP connect ── -->
+    <div id="manualConnectCard">
+      <button class="corp-toggle" id="corpToggle" onclick="toggleCorpDropdown()">
+        <span class="corp-toggle-left">
+          <span class="corp-toggle-icon">🏢</span>
+          Using a corporate network?
+        </span>
+        <span class="corp-toggle-arrow">▼</span>
+      </button>
+      <div class="corp-dropdown" id="corpDropdown">
+        <div class="corp-hint">
+          On managed or corporate WiFi, automatic discovery is usually blocked.
+          Enter the other device's IP to connect directly — no QR code or pairing needed.<br><br>
+          Find the IP address on the other device: it's shown under the scanning bar as
+          <em>192.168.x.x:53317</em>.
+        </div>
+        <div class="manual-ip-row">
+          <input  id="manualIPInput" class="manual-ip-input"
+                  type="text" placeholder="e.g. 192.168.1.42"
+                  autocomplete="off" spellcheck="false" />
+          <button id="manualIPBtn" class="manual-ip-search-btn" onclick="connectManualIP()">
+            🔍 Search
+          </button>
+        </div>
+        <div id="manualIPStatus" class="manual-ip-status"></div>
+      </div>
     </div>
 
     <div class="note-card">
@@ -493,6 +570,94 @@
   }
 
   // ── Render peer list ──────────────────────────────────────────
+  // ── Corporate network toggle ──────────────────────────────────────────────
+  function toggleCorpDropdown() {
+    const toggle   = document.getElementById('corpToggle');
+    const dropdown = document.getElementById('corpDropdown');
+    const isOpen   = dropdown.classList.contains('open');
+    toggle.classList.toggle('open',   !isOpen);
+    dropdown.classList.toggle('open', !isOpen);
+    if (!isOpen) {
+      // Focus the input when dropdown opens
+      setTimeout(() => {
+        const inp = document.getElementById('manualIPInput');
+        if (inp) inp.focus();
+      }, 50);
+    }
+  }
+
+  // ── Manual IP connect ─────────────────────────────────────────────────────
+  async function connectManualIP() {
+    const input  = document.getElementById('manualIPInput');
+    const status = document.getElementById('manualIPStatus');
+    const btn    = document.getElementById('manualIPBtn');
+
+    let ip = (input.value || '').trim().replace(/^https?:\/\//i, '');
+    // strip port if user typed one
+    ip = ip.split(':')[0];
+
+    if (!ip || !/^[\d.]+$/.test(ip)) {
+      status.className = 'manual-ip-status err';
+      status.textContent = 'Enter a valid IP address (e.g. 192.168.1.42)';
+      return;
+    }
+
+    status.className  = 'manual-ip-status loading';
+    status.textContent = 'Connecting to ' + ip + '…';
+    btn.disabled = true;
+
+    try {
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5000);
+      const res   = await fetch(`http://${ip}:53317/info`, { signal: ctrl.signal });
+      clearTimeout(timer);
+
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const info = await res.json();
+
+      // Build a peer object matching the discovery peer shape
+      const peer = {
+        alias:       info.alias       || ip,
+        version:     info.version     || '2.0',
+        deviceModel: info.deviceModel || 'Unknown',
+        deviceType:  info.deviceType  || 'desktop',
+        fingerprint: info.fingerprint || ip,
+        port:        info.port        || 53317,
+        protocol:    'http',
+        download:    true,
+        ip,
+        lastSeen:    Date.now(),
+        baseUrl:     `http://${ip}:53317`,
+        manual:      true,   // flag so we know it was manually added
+      };
+
+      // Add to peer list if not already there
+      const existing = nearbyPeers.findIndex(p => p.fingerprint === peer.fingerprint || p.ip === ip);
+      if (existing >= 0) nearbyPeers[existing] = peer;
+      else nearbyPeers.push(peer);
+
+      renderPeers();
+      status.className  = 'manual-ip-status ok';
+      status.textContent = '✓ Found ' + peer.alias + ' — tap the card above to send';
+      input.value = '';
+    } catch (err) {
+      status.className  = 'manual-ip-status err';
+      if (err.name === 'AbortError') {
+        status.textContent = 'Timed out — is Swyft open on that device and on the same network?';
+      } else {
+        status.textContent = 'Could not connect: ' + err.message;
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Allow pressing Enter in the IP input
+  document.addEventListener('DOMContentLoaded', () => {
+    const inp = document.getElementById('manualIPInput');
+    if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter') connectManualIP(); });
+  });
+
   function renderPeers() {
     const container = document.getElementById('peerList');
     const countEl   = document.getElementById('peerCount');

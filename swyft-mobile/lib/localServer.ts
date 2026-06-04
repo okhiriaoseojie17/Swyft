@@ -77,89 +77,48 @@ function json(statusCode: number, data: object): HttpResponse {
 }
 
 /**
+ * Read request headers from expo-http-server RequestEvent.
+ *
+ * CONFIRMED from source: expo-http-server exposes headers as req.headersJson
+ * (a JSON-encoded string), NOT as req.headers object. All previous fallback
+ * attempts used anyReq.headers which is always undefined.
+ */
+function parseHeaders(req: RequestEvent): Record<string, string> {
+  try {
+    const h = JSON.parse(req.headersJson || '{}');
+    // Normalise keys to lowercase for consistent lookup
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(h)) out[k.toLowerCase()] = String(v);
+    return out;
+  } catch (_) { return {}; }
+}
+
+/**
  * Parse query params from expo-http-server RequestEvent.
  *
- * BULLETPROOF VERSION v2 — different expo-http-server versions expose query params
- * in DIFFERENT places. We try every known location in order:
- *   1. req.paramsJson      (string JSON)   — most versions
- *   2. req.params          (object)        — some forks
- *   3. req.cookiesJson     (string JSON)   — misrouted on a few versions
- *   4. manual parse from req.path / req.url / req.originalUrl
- *   5. request headers     (X-Session-Id etc.) — desktop sends these as fallback
- *   6. JSON request body   — desktop sends sessionId in body as last resort
+ * CONFIRMED from source: query params are in req.paramsJson (JSON string).
+ * req.path does NOT include the query string — they are pre-parsed by the
+ * Kotlin layer into paramsJson. All URL-scanning fallbacks were wrong.
  *
- * The desktop NOW sends sessionId as query param + X-Session-Id header + JSON body
- * so at least one of these paths is guaranteed to work regardless of expo-http-server version.
+ * Layer order:
+ *   1. req.paramsJson  — the correct, documented field
+ *   2. req.headersJson — desktop sends X-Session-Id / X-File-Id / X-Token
+ *      as headers so they survive even if paramsJson is empty
  */
 function parseQueryParams(req: RequestEvent): Record<string, string> {
-  const anyReq = req as any;
-
-  // 1. paramsJson (string)
+  // 1. paramsJson — authoritative source
   try {
     const p = JSON.parse(req.paramsJson || '{}');
     if (p && typeof p === 'object' && Object.keys(p).length > 0) return p;
   } catch (_) {}
 
-  // 2. params as a direct object (some forks)
-  try {
-    if (anyReq.params && typeof anyReq.params === 'object' && Object.keys(anyReq.params).length > 0) {
-      return anyReq.params;
-    }
-  } catch (_) {}
-
-  // 3. cookiesJson (misrouted on a few versions)
-  try {
-    const c = JSON.parse(req.cookiesJson || '{}');
-    if (c && typeof c === 'object' && Object.keys(c).length > 0) return c;
-  } catch (_) {}
-
-  // 4. Manual parse from any available URL-ish field
-  try {
-    const candidates = [anyReq.path, anyReq.url, anyReq.originalUrl, anyReq.uri];
-    for (const cand of candidates) {
-      if (typeof cand !== 'string') continue;
-      const qIdx = cand.indexOf('?');
-      if (qIdx === -1) continue;
-      const qs = cand.slice(qIdx + 1);
-      const out = Object.fromEntries(
-        qs.split('&').filter(Boolean).map(pair => {
-          const eq = pair.indexOf('=');
-          const k  = eq === -1 ? pair : pair.slice(0, eq);
-          const v  = eq === -1 ? ''   : pair.slice(eq + 1);
-          return [decodeURIComponent(k), decodeURIComponent(v)];
-        })
-      );
-      if (Object.keys(out).length > 0) return out;
-    }
-  } catch (_) {}
-
-  // 5. Request headers — desktop sends X-Session-Id as a redundant fallback.
-  //    Build a partial params object from known header mappings.
-  try {
-    const headers: Record<string, string> = anyReq.headers || anyReq.requestHeaders || {};
-    const result: Record<string, string> = {};
-    const sid = headers['x-session-id'] || headers['X-Session-Id'];
-    if (sid) result['sessionId'] = sid;
-    const fid = headers['x-file-id'] || headers['X-File-Id'];
-    if (fid) result['fileId'] = fid;
-    const tok = headers['x-token'] || headers['X-Token'];
-    if (tok) result['token'] = tok;
-    if (Object.keys(result).length > 0) return result;
-  } catch (_) {}
-
-  // 6. JSON body — desktop sends { sessionId } in the POST body as a last resort.
-  try {
-    if (req.body && typeof req.body === 'string' && req.body.trim().startsWith('{')) {
-      const parsed = JSON.parse(req.body);
-      if (parsed && typeof parsed === 'object') {
-        const result: Record<string, string> = {};
-        if (parsed.sessionId) result['sessionId'] = String(parsed.sessionId);
-        if (parsed.fileId)    result['fileId']    = String(parsed.fileId);
-        if (parsed.token)     result['token']     = String(parsed.token);
-        if (Object.keys(result).length > 0) return result;
-      }
-    }
-  } catch (_) {}
+  // 2. Headers — desktop redundantly sends params as X-* headers
+  const headers = parseHeaders(req);
+  const result: Record<string, string> = {};
+  if (headers['x-session-id']) result['sessionId'] = headers['x-session-id'];
+  if (headers['x-file-id'])    result['fileId']    = headers['x-file-id'];
+  if (headers['x-token'])      result['token']     = headers['x-token'];
+  if (Object.keys(result).length > 0) return result;
 
   return {};
 }
@@ -252,20 +211,17 @@ export class LocalServer {
       }
     });
 
-    // ── GET|POST /transfer-status ─────────────────────────────────
-    // Desktop sends sessionId three ways: query param, X-Session-Id header,
-    // and JSON body. We accept POST so the body path works too.
+    // ── POST /transfer-status ────────────────────────────────────
+    // Desktop sends sessionId as query param + X-Session-Id header + JSON body.
+    // We use POST so the body path works even if paramsJson is empty.
     route('/transfer-status', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
-      // DEBUG: confirm where params actually arrive on YOUR expo-http-server version
-      console.log('[LocalServer] /transfer-status RAW',
-        'paramsJson:', req.paramsJson,
-        'cookiesJson:', req.cookiesJson,
-        'path:', (req as any).path,
-        'url:', (req as any).url);
+      console.log('[LocalServer] /transfer-status headersJson:', req.headersJson,
+                  'paramsJson:', req.paramsJson);
 
+      const headers   = parseHeaders(req);
       const params    = parseQueryParams(req);
-      const sessionId = params.sessionId;
-      console.log('[LocalServer] /transfer-status parsed sessionId:', sessionId);
+      const sessionId = headers['x-session-id'] || params.sessionId;
+      console.log('[LocalServer] /transfer-status sessionId:', sessionId);
 
       if (!sessionId) return json(400, { message: 'Missing sessionId' });
 
@@ -284,30 +240,64 @@ export class LocalServer {
     // ── POST /upload ──────────────────────────────────────────────
     route('/upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
-        // Read params from HEADERS first — the desktop sends X-Session-Id, X-File-Id,
-        // X-Token as headers because expo-http-server strips query strings on many versions.
-        // Fall back to parseQueryParams as a secondary safety net.
-        const anyReq  = req as any;
-        const headers: Record<string,string> = anyReq.headers || anyReq.requestHeaders || {};
-        const paramsFallback = parseQueryParams(req);
+        // Read params from BOTH headersJson and paramsJson.
+        // expo-http-server (confirmed from source) uses:
+        //   req.headersJson  — JSON string of request headers
+        //   req.paramsJson   — JSON string of query params (pre-parsed by Kotlin)
+        //   req.path         — path WITHOUT query string
+        // The desktop sends params three ways: query string + X-* headers + body,
+        // so at least one always arrives intact.
+        const headers   = parseHeaders(req);
+        const params    = parseQueryParams(req);
 
-        const sessionId = headers['x-session-id'] || headers['X-Session-Id'] || paramsFallback.sessionId;
-        const fileId    = headers['x-file-id']    || headers['X-File-Id']    || paramsFallback.fileId;
-        const token     = headers['x-token']      || headers['X-Token']      || paramsFallback.token;
-        const fileName  = headers['x-file-name']  || headers['X-File-Name']  || '';
+        const sessionId = headers['x-session-id'] || params.sessionId;
+        const fileId    = headers['x-file-id']    || params.fileId;
+        const token     = headers['x-token']      || params.token;
 
         console.log('[LocalServer] /upload sessionId:', sessionId, 'fileId:', fileId);
         console.log('[LocalServer] /upload body length:', req.body?.length ?? 'null');
+        console.log('[LocalServer] /upload headersJson:', req.headersJson);
+        console.log('[LocalServer] /upload paramsJson:', req.paramsJson);
 
         if (!sessionId || !fileId || !token) {
-          console.warn('[LocalServer] /upload missing params. headers:', JSON.stringify(headers));
+          console.warn('[LocalServer] /upload missing params.',
+            'headersJson:', req.headersJson, 'paramsJson:', req.paramsJson);
           return json(400, { message: 'Missing sessionId, fileId or token' });
         }
 
         const session = this.sessions.get(sessionId);
-        if (!session || session.accepted !== true) {
-          console.warn('[LocalServer] /upload session not found or not accepted:', sessionId);
-          return json(403, { message: 'Session not found or not accepted' });
+        if (!session) {
+          console.warn('[LocalServer] /upload session not found:', sessionId);
+          return json(403, { message: 'Session not found' });
+        }
+
+        // TIMING FIX: the upload can arrive fractionally before respondToSession()
+        // sets accepted=true (the desktop fires upload immediately after the phone
+        // calls /session-response, and those two JS tasks can race).
+        // A valid token proves the session is legitimate — wait up to 2s for
+        // accepted to become true before rejecting.
+        if (session.accepted !== true) {
+          const tokenValid = session.tokens.get(fileId) === token;
+          if (!tokenValid) {
+            console.warn('[LocalServer] /upload invalid token (pre-accept check)');
+            return json(403, { message: 'Invalid token' });
+          }
+          // Wait up to 2000ms for user to accept (covers the race condition).
+          // TypeScript narrows session.accepted to false|null inside this block,
+          // so we check each case explicitly instead of !== true.
+          const deadline = Date.now() + 2000;
+          while (session.accepted === null && Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+          if (session.accepted === false) {
+            console.warn('[LocalServer] /upload session declined:', sessionId);
+            return json(403, { message: 'Session declined' });
+          }
+          if (session.accepted === null) {
+            console.warn('[LocalServer] /upload session still pending after wait:', sessionId);
+            return json(403, { message: 'Session not yet accepted' });
+          }
+          // session.accepted === true — fall through
         }
 
         if (session.tokens.get(fileId) !== token) {
