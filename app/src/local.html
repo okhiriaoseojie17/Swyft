@@ -456,8 +456,12 @@
     and to receive 'incoming-request-local' / 'nearby-peers' push events from the
     backend. All file data travels over plain HTTP fetch() calls to port 53317.
   -->
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- Bundled locally — no internet required for offline/hotspot transfers -->
+  <!-- Download once: https://cdn.socket.io/4.7.5/socket.io.min.js          -->
+  <!-- Download once: https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js -->
+  <!-- Drop both files into your src/ folder (served by express.static)      -->
+  <script src="socket.io.min.js"></script>
+  <script src="jszip.min.js"></script>
   <script>
   // ══════════════════════════════════════════════════════════════
   // Config — two URLs:
