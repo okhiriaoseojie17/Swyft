@@ -21,11 +21,21 @@
  *   silently returned {} on some expo-http-server versions, making /transfer-status
  *   return 400 forever → desktop hung on "waiting to accept" even after Accept tap.
  *
+ * CHUNKED UPLOAD FIX:
+ *   expo-http-server buffers the entire request body into a JS string before
+ *   handing it to the route handler. For large files this causes the Android JS
+ *   bridge to choke or truncate the body, producing the "stalls at ~80%" symptom.
+ *
+ *   FIX: desktop now sends files in 512 KB base64 chunks, each as a separate
+ *   POST /upload with X-Chunk-Index / X-Total-Chunks headers. The mobile server
+ *   writes each chunk to a temp file and reassembles on the final chunk.
+ *   No individual request body ever exceeds ~700 KB.
+ *
  * Endpoints:
  *   GET  /info                          → device info
  *   POST /prepare-upload                → registers session, returns pending immediately
- *   GET  /transfer-status?sessionId=X   → 'pending' | 'accepted' | 'declined'
- *   POST /upload?sessionId=&fileId=&token= → receive base64 file body
+ *   POST /transfer-status               → 'pending' | 'accepted' | 'declined'
+ *   POST /upload?sessionId=&fileId=&token= → receive base64 chunk(s)
  *   POST /cancel                        → cancel session
  */
 
@@ -61,9 +71,11 @@ export interface LocalServerCallbacks {
 }
 
 interface PendingSession {
-  req:      TransferRequest;
-  accepted: boolean | null;   // null = pending user decision
-  tokens:   Map<string, string>;
+  req:           TransferRequest;
+  accepted:      boolean | null;   // null = pending user decision
+  tokens:        Map<string, string>;
+  // Track chunks received per file: fileId → Set of chunk indices received
+  chunksReceived: Map<string, Set<number>>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -80,13 +92,11 @@ function json(statusCode: number, data: object): HttpResponse {
  * Read request headers from expo-http-server RequestEvent.
  *
  * CONFIRMED from source: expo-http-server exposes headers as req.headersJson
- * (a JSON-encoded string), NOT as req.headers object. All previous fallback
- * attempts used anyReq.headers which is always undefined.
+ * (a JSON-encoded string), NOT as req.headers object.
  */
 function parseHeaders(req: RequestEvent): Record<string, string> {
   try {
     const h = JSON.parse(req.headersJson || '{}');
-    // Normalise keys to lowercase for consistent lookup
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(h)) out[k.toLowerCase()] = String(v);
     return out;
@@ -96,13 +106,9 @@ function parseHeaders(req: RequestEvent): Record<string, string> {
 /**
  * Parse query params from expo-http-server RequestEvent.
  *
- * CONFIRMED from source: query params are in req.paramsJson (JSON string).
- * req.path does NOT include the query string — they are pre-parsed by the
- * Kotlin layer into paramsJson. All URL-scanning fallbacks were wrong.
- *
  * Layer order:
  *   1. req.paramsJson  — the correct, documented field
- *   2. req.headersJson — desktop sends X-Session-Id / X-File-Id / X-Token
+ *   2. req.headersJson — desktop sends X-Session-Id / X-File-Id / X-Token / X-Chunk-Index
  *      as headers so they survive even if paramsJson is empty
  */
 function parseQueryParams(req: RequestEvent): Record<string, string> {
@@ -115,9 +121,11 @@ function parseQueryParams(req: RequestEvent): Record<string, string> {
   // 2. Headers — desktop redundantly sends params as X-* headers
   const headers = parseHeaders(req);
   const result: Record<string, string> = {};
-  if (headers['x-session-id']) result['sessionId'] = headers['x-session-id'];
-  if (headers['x-file-id'])    result['fileId']    = headers['x-file-id'];
-  if (headers['x-token'])      result['token']     = headers['x-token'];
+  if (headers['x-session-id'])    result['sessionId']    = headers['x-session-id'];
+  if (headers['x-file-id'])       result['fileId']       = headers['x-file-id'];
+  if (headers['x-token'])         result['token']        = headers['x-token'];
+  if (headers['x-chunk-index'])   result['chunkIndex']   = headers['x-chunk-index'];
+  if (headers['x-total-chunks'])  result['totalChunks']  = headers['x-total-chunks'];
   if (Object.keys(result).length > 0) return result;
 
   return {};
@@ -185,19 +193,18 @@ export class LocalServer {
         }
 
         // Derive sender IP so we can POST /session-response back to the desktop.
-        // expo-http-server exposes remoteAddress under various field names by version.
-        // The desktop also sends its own IP in body.info.senderIP as a guaranteed fallback.
-        const anyReq        = req as any;
-        const senderIP      = anyReq.remoteAddress || anyReq.remoteAddr ||
-                              anyReq.clientIp      || anyReq.ip ||
-                              (body.info as any).senderIP || '';
-        const senderPort    = body.info.port || SWYFT_PORT;
+        const anyReq     = req as any;
+        const senderIP   = anyReq.remoteAddress || anyReq.remoteAddr ||
+                           anyReq.clientIp      || anyReq.ip ||
+                           (body.info as any).senderIP || '';
+        const senderPort = body.info.port || SWYFT_PORT;
         const senderBaseUrl = senderIP ? `http://${senderIP}:${senderPort}` : '';
 
         const session: PendingSession = {
           req: { sessionId, from: body.info.alias, fromId: body.info.fingerprint, senderBaseUrl, files },
-          accepted: null,
+          accepted:       null,
           tokens,
+          chunksReceived: new Map(),
         };
 
         this.sessions.set(sessionId, session);
@@ -212,8 +219,6 @@ export class LocalServer {
     });
 
     // ── POST /transfer-status ────────────────────────────────────
-    // Desktop sends sessionId as query param + X-Session-Id header + JSON body.
-    // We use POST so the body path works even if paramsJson is empty.
     route('/transfer-status', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       console.log('[LocalServer] /transfer-status headersJson:', req.headersJson,
                   'paramsJson:', req.paramsJson);
@@ -238,26 +243,23 @@ export class LocalServer {
     });
 
     // ── POST /upload ──────────────────────────────────────────────
+    // Receives one base64 chunk per request.
+    // Headers: X-Session-Id, X-File-Id, X-Token, X-Chunk-Index, X-Total-Chunks
+    // On the final chunk all parts are reassembled into the destination file.
     route('/upload', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
-        // Read params from BOTH headersJson and paramsJson.
-        // expo-http-server (confirmed from source) uses:
-        //   req.headersJson  — JSON string of request headers
-        //   req.paramsJson   — JSON string of query params (pre-parsed by Kotlin)
-        //   req.path         — path WITHOUT query string
-        // The desktop sends params three ways: query string + X-* headers + body,
-        // so at least one always arrives intact.
-        const headers   = parseHeaders(req);
-        const params    = parseQueryParams(req);
+        const headers      = parseHeaders(req);
+        const params       = parseQueryParams(req);
 
-        const sessionId = headers['x-session-id'] || params.sessionId;
-        const fileId    = headers['x-file-id']    || params.fileId;
-        const token     = headers['x-token']      || params.token;
+        const sessionId    = headers['x-session-id']   || params.sessionId;
+        const fileId       = headers['x-file-id']      || params.fileId;
+        const token        = headers['x-token']        || params.token;
+        const chunkIndex   = parseInt(headers['x-chunk-index']  ?? params.chunkIndex  ?? '0', 10);
+        const totalChunks  = parseInt(headers['x-total-chunks'] ?? params.totalChunks ?? '1', 10);
 
-        console.log('[LocalServer] /upload sessionId:', sessionId, 'fileId:', fileId);
+        console.log('[LocalServer] /upload sessionId:', sessionId,
+                    'fileId:', fileId, 'chunk:', chunkIndex, '/', totalChunks);
         console.log('[LocalServer] /upload body length:', req.body?.length ?? 'null');
-        console.log('[LocalServer] /upload headersJson:', req.headersJson);
-        console.log('[LocalServer] /upload paramsJson:', req.paramsJson);
 
         if (!sessionId || !fileId || !token) {
           console.warn('[LocalServer] /upload missing params.',
@@ -271,20 +273,14 @@ export class LocalServer {
           return json(403, { message: 'Session not found' });
         }
 
-        // TIMING FIX: the upload can arrive fractionally before respondToSession()
-        // sets accepted=true (the desktop fires upload immediately after the phone
-        // calls /session-response, and those two JS tasks can race).
-        // A valid token proves the session is legitimate — wait up to 2s for
-        // accepted to become true before rejecting.
+        // TIMING FIX: upload can arrive fractionally before respondToSession()
+        // sets accepted=true. A valid token proves legitimacy — wait up to 2s.
         if (session.accepted !== true) {
           const tokenValid = session.tokens.get(fileId) === token;
           if (!tokenValid) {
             console.warn('[LocalServer] /upload invalid token (pre-accept check)');
             return json(403, { message: 'Invalid token' });
           }
-          // Wait up to 2000ms for user to accept (covers the race condition).
-          // TypeScript narrows session.accepted to false|null inside this block,
-          // so we check each case explicitly instead of !== true.
           const deadline = Date.now() + 2000;
           while (session.accepted === null && Date.now() < deadline) {
             await new Promise(r => setTimeout(r, 50));
@@ -297,7 +293,6 @@ export class LocalServer {
             console.warn('[LocalServer] /upload session still pending after wait:', sessionId);
             return json(403, { message: 'Session not yet accepted' });
           }
-          // session.accepted === true — fall through
         }
 
         if (session.tokens.get(fileId) !== token) {
@@ -308,17 +303,53 @@ export class LocalServer {
         const fileInfo = session.req.files.find(f => f.id === fileId);
         if (!fileInfo) return json(400, { message: 'Unknown file' });
 
-        const safeName = fileInfo.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
-        const dest     = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
+        const safeName  = fileInfo.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
+        const chunkPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${chunkIndex}`;
 
-        // Body is base64 — desktop encoded the file before sending
-        await FileSystem.writeAsStringAsync(dest, req.body, {
+        // Write this chunk to its own temp file.
+        // Each body is at most ~700 KB (512 KB raw → base64) — safe for the JS bridge.
+        await FileSystem.writeAsStringAsync(chunkPath, req.body, {
           encoding: FileSystem.EncodingType.Base64,
         });
 
-        console.log('[LocalServer] file saved:', dest);
+        // Track which chunks we have for this file
+        if (!session.chunksReceived.has(fileId)) {
+          session.chunksReceived.set(fileId, new Set());
+        }
+        session.chunksReceived.get(fileId)!.add(chunkIndex);
+
+        // Emit progress: use chunks as a proxy for bytes received
+        const chunksIn = session.chunksReceived.get(fileId)!.size;
+        const approxReceived = Math.min(chunksIn * 512 * 1024, fileInfo.size);
+        this.cb.onTransferProgress(sessionId, fileId, approxReceived, fileInfo.size);
+
+        // Not the final chunk — acknowledge and wait for next
+        if (chunkIndex < totalChunks - 1) {
+          return json(200, { message: 'chunk received', chunkIndex });
+        }
+
+        // ── Final chunk — reassemble all parts ────────────────────
+        const dest = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
+        let assembled = '';
+
+        for (let i = 0; i < totalChunks; i++) {
+          const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+          const part = await FileSystem.readAsStringAsync(partPath, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          assembled += part;
+          // Delete chunk temp file immediately to free space
+          await FileSystem.deleteAsync(partPath, { idempotent: true });
+        }
+
+        await FileSystem.writeAsStringAsync(dest, assembled, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        console.log('[LocalServer] file assembled and saved:', dest);
 
         session.tokens.delete(fileId);
+        session.chunksReceived.delete(fileId);
         this.cb.onTransferComplete(sessionId, fileId, dest);
 
         if (session.tokens.size === 0) {
@@ -337,6 +368,20 @@ export class LocalServer {
     route('/cancel', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
       try {
         const { sessionId } = JSON.parse(req.body || '{}');
+        // Clean up any leftover chunk temp files for this session
+        if (sessionId) {
+          const session = this.sessions.get(sessionId);
+          if (session) {
+            for (const [fileId, indices] of session.chunksReceived.entries()) {
+              const fileInfo = session.req.files.find(f => f.id === fileId);
+              if (!fileInfo) continue;
+              for (const i of indices) {
+                const p = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+                await FileSystem.deleteAsync(p, { idempotent: true });
+              }
+            }
+          }
+        }
         this.sessions.delete(sessionId);
         this.cb.onTransferCancelled(sessionId);
         return json(200, { message: 'cancelled' });
@@ -368,9 +413,6 @@ export class LocalServer {
     console.log('[LocalServer] session', sessionId, accepted ? 'ACCEPTED' : 'DECLINED');
 
     // Push the decision back to the sender immediately.
-    // For desktop→phone transfers the sender is an Express server that has a
-    // /session-response endpoint and a /wait-for-response long-poll waiting.
-    // This replaces the old poll-from-desktop pattern entirely.
     const url = session.req.senderBaseUrl;
     if (url) {
       fetch(`${url}/session-response`, {
@@ -381,7 +423,6 @@ export class LocalServer {
         console.log('[LocalServer] /session-response posted to', url);
       }).catch((err: any) => {
         console.warn('[LocalServer] /session-response failed:', err.message);
-        // Non-fatal: desktop will time out gracefully and show an error.
       });
     } else {
       console.warn('[LocalServer] no senderBaseUrl — cannot push session-response');

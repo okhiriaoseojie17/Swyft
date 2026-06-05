@@ -504,6 +504,24 @@
     return (t === 'desktop' || t === 'windows' || t === 'mac' || t === 'linux') ? '💻' : '📱';
   }
 
+  // Merge an incoming peer list into nearbyPeers without clobbering existing data.
+  // Uses spread so a more-complete entry (e.g. one that has alias) always wins.
+  function mergePeers(list) {
+    for (const p of list) {
+      const idx = nearbyPeers.findIndex(x => x.fingerprint === p.fingerprint);
+      if (idx >= 0) {
+        // Keep whichever has a real alias; incoming entry takes precedence otherwise
+        nearbyPeers[idx] = {
+          ...nearbyPeers[idx],
+          ...p,
+          alias: p.alias || nearbyPeers[idx].alias,
+        };
+      } else {
+        nearbyPeers.push(p);
+      }
+    }
+  }
+
   // ── Socket.io connection (signal server port 3001) ────────────
   function initSocket() {
     socket = io(SIGNAL_URL, { reconnection: true, reconnectionDelay: 2000 });
@@ -512,10 +530,11 @@
       // Announce with our swyftId for online-mode peer list
       socket.emit('announce', { name: MY_NAME, swyftId: MY_ID }, (res) => {});
 
-      // Load initial nearby peers from REST
+      // Load initial nearby peers from REST — merge into list, never replace,
+      // so a concurrent socket push doesn't lose alias data.
       fetch(`${LOCAL_URL}/nearby-peers`)
         .then(r => r.json())
-        .then(list => { nearbyPeers = list; renderPeers(); })
+        .then(list => { mergePeers(list); renderPeers(); })
         .catch(() => {});
 
       showStatus('✓ Ready — searching for nearby devices', 'success');
@@ -524,9 +543,15 @@
     socket.on('disconnect', () => showStatus('Disconnected from local server', 'info'));
     socket.on('connect_error', () => showStatus('Cannot reach local server', 'error'));
 
-    // UDP-discovered peers pushed by backend
+    // UDP-discovered peers pushed by backend — merge to avoid alias race condition.
+    // A REST fetch and a socket push can interleave; whichever arrives first must
+    // not be silently overwritten by a stale snapshot from the other.
     socket.on('nearby-peers', (list) => {
-      nearbyPeers = list;
+      mergePeers(list);
+      // Remove peers the backend has expired (not in the new list)
+      nearbyPeers = nearbyPeers.filter(p =>
+        list.some(x => x.fingerprint === p.fingerprint)
+      );
       renderPeers();
     });
 
@@ -838,54 +863,62 @@
     isTransferring = true; isCancelled = false;
     abortCtrl = new AbortController();
 
-    // ── Convert file to base64 then POST as text/plain ────────────
-    // expo-http-server (Kotlin) uses request.content() which returns a String.
-    // Sending raw binary corrupts the body. Base64 + text/plain is clean and safe.
+    // ── Send file in 512 KB chunks as base64 ─────────────────────
+    // expo-http-server buffers the entire request body before handing it to JS.
+    // A single large body causes the Android JS bridge to choke (~80% stall).
+    // Sending 512 KB slices keeps each individual request body under ~700 KB,
+    // which is well within the bridge's safe limit.
     try {
-      const total = selectedFile.size;
+      const CHUNK_BYTES = 512 * 1024;  // 512 KB raw → ~700 KB base64 per request
+      const total       = selectedFile.size;
 
-      // Step 1 — Read file into ArrayBuffer
       document.getElementById('progStats').textContent = 'Reading file…';
       const arrayBuffer = await selectedFile.arrayBuffer();
       if (isCancelled) return;
 
-      // Step 2 — Convert to base64 in 8 KB chunks (avoids stack overflow)
-      const uint8  = new Uint8Array(arrayBuffer);
-      const CHUNK  = 8192;
-      let   binary = '';
-      for (let i = 0; i < uint8.length; i += CHUNK) {
-        binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
-        const pct = Math.round((i / uint8.length) * 50);
-        document.getElementById('progFill').style.width  = pct + '%';
-        document.getElementById('progStats').textContent = `Encoding… ${pct}%`;
-        if (i % (CHUNK * 20) === 0) await new Promise(r => setTimeout(r, 0));
-      }
-      const base64Body = btoa(binary);
-      if (isCancelled) return;
+      const uint8       = new Uint8Array(arrayBuffer);
+      const totalChunks = Math.ceil(uint8.length / CHUNK_BYTES) || 1;
 
-      // Step 3 — Send to phone
-      document.getElementById('progFill').style.width  = '60%';
-      document.getElementById('progStats').textContent = 'Sending to phone…';
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        if (isCancelled) return;
 
-      // sessionId, fileId, token sent as HEADERS not query params.
-      // expo-http-server strips query strings on many versions — headers always survive.
-      const uploadRes = await fetch(
-        `${peerBaseUrl}/upload`,
-        {
-          method:  'POST',
-          headers: {
-            'Content-Type': 'text/plain',
-            'X-File-Name':  encodeURIComponent(selectedFile.name),
-            'X-Session-Id': sessionId,
-            'X-File-Id':    fileId,
-            'X-Token':      token,
-          },
-          body:   base64Body,
-          signal: abortCtrl.signal,
+        const start = chunkIndex * CHUNK_BYTES;
+        const end   = Math.min(start + CHUNK_BYTES, uint8.length);
+        const slice = uint8.subarray(start, end);
+
+        // Encode this slice to base64 in small steps to avoid stack overflow
+        const ENCODE_STEP = 8192;
+        let binary = '';
+        for (let i = 0; i < slice.length; i += ENCODE_STEP) {
+          binary += String.fromCharCode(...slice.subarray(i, i + ENCODE_STEP));
         }
-      );
+        const base64Chunk = btoa(binary);
 
-      if (!uploadRes.ok) throw new Error(`Upload failed: HTTP ${uploadRes.status}`);
+        const uploadRes = await fetch(
+          `${peerBaseUrl}/upload`,
+          {
+            method:  'POST',
+            headers: {
+              'Content-Type':   'text/plain',
+              'X-File-Name':    encodeURIComponent(selectedFile.name),
+              'X-Session-Id':   sessionId,
+              'X-File-Id':      fileId,
+              'X-Token':        token,
+              'X-Chunk-Index':  String(chunkIndex),
+              'X-Total-Chunks': String(totalChunks),
+            },
+            body:   base64Chunk,
+            signal: abortCtrl.signal,
+          }
+        );
+
+        if (!uploadRes.ok) throw new Error(`Chunk ${chunkIndex + 1}/${totalChunks} failed: HTTP ${uploadRes.status}`);
+
+        const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+        document.getElementById('progFill').style.width  = pct + '%';
+        document.getElementById('progStats').textContent =
+          `${pct}% — ${fmtSize(end)} of ${fmtSize(total)}`;
+      }
 
       isTransferring = false;
       document.getElementById('progFill').style.width      = '100%';
