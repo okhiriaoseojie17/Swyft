@@ -291,6 +291,10 @@
     }
     @keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
     .prog-stats  { font-size: 11px; color: #444; text-align: center; margin-bottom: 16px; }
+    /* Send-to-phone: second progress overlay reuses .progress-overlay/.progress-sheet,
+       but we need a label to distinguish the two directions */
+    .prog-direction { font-size: 10px; font-weight: 700; letter-spacing: .6px;
+      text-transform: uppercase; color: var(--green); margin-bottom: 6px; }
     .dl-btn {
       display: block; width: 100%; padding: 13px;
       background: var(--green); color: #fff; border-radius: 10px; border: none;
@@ -418,10 +422,11 @@
     </div>
   </div>
 
-  <!-- Progress overlay -->
+  <!-- Progress overlay (receiving from phone) -->
   <div class="progress-overlay" id="progressOverlay">
     <div class="progress-sheet">
       <div class="prog-handle"></div>
+      <div class="prog-direction" id="progDirection">Sending…</div>
       <div class="prog-title"  id="progTitle">Transferring…</div>
       <div class="prog-file"   id="progFile"></div>
       <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
@@ -429,6 +434,20 @@
       <div id="progActions"></div>
       <button class="btn btn-outline" id="progCancelBtn" onclick="cancelTransfer()" style="margin-top:10px">✕ Cancel</button>
       <button class="btn btn-outline" id="progCloseBtn"  onclick="closeProgress()"  style="margin-top:8px;display:none">Close</button>
+    </div>
+  </div>
+
+  <!-- Send-to-phone progress overlay -->
+  <div class="progress-overlay" id="sendPhoneOverlay">
+    <div class="progress-sheet">
+      <div class="prog-handle"></div>
+      <div class="prog-direction">📤 Sending to phone</div>
+      <div class="prog-title"  id="sendPhoneTitle">Sending…</div>
+      <div class="prog-file"   id="sendPhoneFile"></div>
+      <div class="prog-track"><div class="prog-fill" id="sendPhoneFill"></div></div>
+      <div class="prog-stats"  id="sendPhoneStats">Waiting for acceptance…</div>
+      <button class="btn btn-outline" id="sendPhoneCancelBtn" onclick="cancelSendToPhone()" style="margin-top:10px">✕ Cancel</button>
+      <button class="btn btn-outline" id="sendPhoneCloseBtn"  onclick="closeSendPhoneProgress()" style="margin-top:8px;display:none">Close</button>
     </div>
   </div>
 
@@ -592,6 +611,64 @@
         activeSession = null;
       }
     });
+
+    // Progress for chunked uploads coming IN from a phone (phone→desktop)
+    socket.on('upload-progress-local', ({ sessionId, fileId, pct }) => {
+      if (activeSession === sessionId) {
+        document.getElementById('progFill').style.width  = pct + '%';
+        document.getElementById('progStats').textContent = pct + '% received…';
+      }
+    });
+
+    // Progress for desktop→phone sends driven by /send-to-phone endpoint
+    socket.on('send-to-phone-progress', ({ pct, status, error, sessionId, fileName }) => {
+      if (sessionId) sendToPhoneSession = sessionId;
+
+      const fillEl   = document.getElementById('sendPhoneFill');
+      const titleEl  = document.getElementById('sendPhoneTitle');
+      const statsEl  = document.getElementById('sendPhoneStats');
+      const cancelEl = document.getElementById('sendPhoneCancelBtn');
+      const closeEl  = document.getElementById('sendPhoneCloseBtn');
+
+      if (status === 'requesting' || status === 'waiting') {
+        statsEl.textContent = 'Waiting for phone to accept…';
+      } else if (status === 'uploading') {
+        fillEl.style.width  = pct + '%';
+        statsEl.textContent = pct + '% sent…';
+        titleEl.textContent = 'Sending…';
+      } else if (status === 'done') {
+        fillEl.style.width  = '100%';
+        titleEl.textContent = '✓ Sent to phone!';
+        statsEl.textContent = fileName ? fileName + ' delivered' : 'File delivered';
+        cancelEl.style.display = 'none';
+        closeEl.style.display  = 'block';
+        isTransferring         = false;
+        showStatus('✓ File sent to phone!', 'success');
+      } else if (status === 'declined') {
+        titleEl.textContent = '✕ Declined';
+        statsEl.textContent = 'The phone declined the transfer';
+        cancelEl.style.display = 'none';
+        closeEl.style.display  = 'block';
+        isTransferring         = false;
+        showStatus('Transfer declined by phone', 'error');
+      } else if (status === 'timeout') {
+        titleEl.textContent = 'Timed out';
+        statsEl.textContent = 'Phone did not respond in time';
+        cancelEl.style.display = 'none';
+        closeEl.style.display  = 'block';
+        isTransferring         = false;
+        showStatus('Phone did not respond', 'error');
+      } else if (status === 'cancelled') {
+        closeSendPhoneProgress();
+      } else if (status === 'error') {
+        titleEl.textContent = '❌ Error';
+        statsEl.textContent = error || 'Unknown error';
+        cancelEl.style.display = 'none';
+        closeEl.style.display  = 'block';
+        isTransferring         = false;
+        showStatus('❌ Send error: ' + (error || 'Unknown'), 'error');
+      }
+    });
   }
 
   // ── Render peer list ──────────────────────────────────────────
@@ -703,6 +780,19 @@
 
     container.innerHTML = '';
     for (const p of nearbyPeers) {
+      const isMobile  = p.deviceType === 'mobile' || p.deviceType === 'android' || p.deviceType === 'ios';
+      // Action label: when a file is selected show the transfer direction arrows.
+      // For mobile peers we show both ↑ Send (phone pulls from desktop) and
+      // ↓ To Phone (desktop pushes to phone). For desktop peers only ↑ Send.
+      const actionHTML = selectedFile
+        ? isMobile
+          ? `<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+               <span class="peer-action" data-action="send" style="cursor:pointer">↑ Send here</span>
+               <span class="peer-action" data-action="send-to-phone" style="color:#f59e0b;cursor:pointer;font-size:11px">↓ Send to phone</span>
+             </div>`
+          : `<span class="peer-action">↑ Send</span>`
+        : `<span class="peer-arrow">›</span>`;
+
       const card = document.createElement('div');
       card.className  = 'peer-card';
       card.dataset.fp = p.fingerprint;
@@ -712,10 +802,17 @@
           <div class="peer-name">${escHtml(p.alias)}</div>
           <div class="peer-sub">${escHtml(p.deviceType)} · ${escHtml(p.ip || 'unknown ip')}</div>
         </div>
-        ${selectedFile
-          ? `<span class="peer-action">↑ Send</span>`
-          : `<span class="peer-arrow">›</span>`}`;
-      card.onclick = () => sendToPeer(p);
+        ${actionHTML}`;
+
+      // Wire click: if mobile + file selected, check which action was tapped
+      card.onclick = (e) => {
+        const action = e.target?.dataset?.action || e.target?.closest('[data-action]')?.dataset?.action;
+        if (action === 'send-to-phone') {
+          sendToPhone(p);
+        } else {
+          sendToPeer(p);
+        }
+      };
       container.appendChild(card);
     }
   }
@@ -968,8 +1065,9 @@
 
   // ── Progress overlay ──────────────────────────────────────────
   function openProgress(verb, filename) {
-    document.getElementById('progTitle').textContent       = verb + '…';
-    document.getElementById('progFile').textContent        = filename;
+    document.getElementById('progDirection').textContent     = verb === 'Receiving' ? '📥 Receiving from phone' : '📤 Sending to desktop';
+    document.getElementById('progTitle').textContent         = verb + '…';
+    document.getElementById('progFile').textContent          = filename;
     document.getElementById('progFill').style.width        = '0%';
     document.getElementById('progStats').textContent       = 'Starting…';
     document.getElementById('progActions').innerHTML       = '';
@@ -1064,6 +1162,90 @@
       btn.textContent = '❌ Could not reach backend';
       btn.disabled    = false;
     }
+  }
+
+  // ── Send file FROM laptop TO phone ────────────────────────────
+  // The phone receives it exactly the same way it receives from another phone:
+  // the phone's LocalServer (localServer.ts) handles /prepare-upload and /upload.
+  // The desktop backend (/send-to-phone) drives the HTTP flow so the browser
+  // doesn't have to deal with CORS or chunking logic directly.
+
+  let sendToPhoneSession = null;
+
+  async function sendToPhone(peer) {
+    if (!selectedFile) { showStatus('⚠️ Pick a file first', 'error'); return; }
+    if (isTransferring) { showStatus('⚠️ Transfer already in progress', 'error'); return; }
+
+    // Read file as base64 in the browser, then hand off to backend
+    showStatus(`Reading file for ${peer.alias}…`, 'info');
+
+    let fileBase64;
+    try {
+      const buf    = await selectedFile.arrayBuffer();
+      const uint8  = new Uint8Array(buf);
+      // Encode in 8 KB steps to avoid stack overflow on large files
+      let binary = '';
+      const STEP = 8192;
+      for (let i = 0; i < uint8.length; i += STEP) {
+        binary += String.fromCharCode(...uint8.subarray(i, i + STEP));
+      }
+      fileBase64 = btoa(binary);
+    } catch (err) {
+      showStatus('❌ Could not read file: ' + err.message, 'error');
+      return;
+    }
+
+    // Open progress overlay
+    document.getElementById('sendPhoneTitle').textContent    = 'Waiting for ' + peer.alias + '…';
+    document.getElementById('sendPhoneFile').textContent     = selectedFile.name;
+    document.getElementById('sendPhoneFill').style.width     = '0%';
+    document.getElementById('sendPhoneStats').textContent    = 'Requesting acceptance…';
+    document.getElementById('sendPhoneCancelBtn').style.display = 'block';
+    document.getElementById('sendPhoneCloseBtn').style.display  = 'none';
+    document.getElementById('sendPhoneOverlay').classList.add('visible');
+    isTransferring = true;
+
+    try {
+      const res = await fetch(`${LOCAL_URL}/send-to-phone`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          peerIP:     peer.ip,
+          peerPort:   peer.port || 53317,
+          fileName:   selectedFile.name,
+          fileSize:   selectedFile.size,
+          fileBase64,
+        }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      // Progress comes via socket.io 'send-to-phone-progress' — no need to await
+    } catch (err) {
+      isTransferring = false;
+      showStatus('❌ Could not start send: ' + err.message, 'error');
+      closeSendPhoneProgress();
+    }
+  }
+
+  function closeSendPhoneProgress() {
+    document.getElementById('sendPhoneOverlay').classList.remove('visible');
+    isTransferring    = false;
+    sendToPhoneSession = null;
+  }
+
+  async function cancelSendToPhone() {
+    if (!confirm('Cancel this transfer?')) return;
+    isCancelled = true;
+    if (sendToPhoneSession) {
+      try {
+        await fetch(`${LOCAL_URL}/cancel-send-to-phone`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ sessionId: sendToPhoneSession }),
+        });
+      } catch (_) {}
+    }
+    closeSendPhoneProgress();
+    showStatus('Transfer cancelled', 'info');
   }
 
   // ── Init ──────────────────────────────────────────────────────

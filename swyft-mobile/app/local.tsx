@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
+import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 import { useRouter } from 'expo-router';
 import SwyftHeader   from '@/components/SwyftHeader';
@@ -56,12 +57,21 @@ export default function LocalScreen() {
   const [savedUri,     setSavedUri]   = useState<string | null>(null);
   const [savedName,    setSavedName]  = useState('');
   const [savedIsZip,   setSavedIsZip] = useState(false);
+  const [savedMimeType, setSavedMimeType] = useState<string>('');
   const [reqVisible,   setReqVisible] = useState(false);
   const [reqData,      setReqData]    = useState<TransferRequest | null>(null);
   const [statusMsg,    setStatusMsg]  = useState('');
   const [statusType,   setStatusType] = useState<StatusType>(null);
 
-  const tmRef = useRef<TransferManager | null>(null);
+  const tmRef        = useRef<TransferManager | null>(null);
+  // Stores the fake-progress interval used while receiving (see respondToRequest).
+  // Kept in a ref so onTransferComplete / onTransferError can clear it immediately
+  // instead of letting it keep ticking after the transfer finishes.
+  const pendingMimeTypeRef = useRef<string>('');
+  // Stores the fake-progress interval used while receiving (see respondToRequest).
+  // Kept in a ref so onTransferComplete / onTransferError can clear it immediately
+  // instead of letting it keep ticking after the transfer finishes.
+  const fakeProgRef  = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function showStatus(msg: string, type: StatusType) {
     setStatusMsg(msg); setStatusType(type);
@@ -87,21 +97,33 @@ export default function LocalScreen() {
       },
 
       onTransferComplete: (fileName, uri) => {
+        // Kill the fake progress animation immediately so it doesn't keep
+        // ticking past 100% after the transfer has already finished.
+        if (fakeProgRef.current) {
+          clearInterval(fakeProgRef.current);
+          fakeProgRef.current = null;
+        }
         // Strip the sessionId prefix the server adds to the cache filename
         // e.g. "abc123_myfile.pdf" → "myfile.pdf" for display
         const displayName = fileName.includes('_')
           ? fileName.substring(fileName.indexOf('_') + 1)
           : fileName;
         setProgPct(100);
-        setProgStats('File saved — tap below to share');
+        setProgStats('File received — tap below to save');
         setProgDone(true);
         setSavedUri(uri);
         setSavedName(displayName);
         setSavedIsZip(displayName.endsWith('.zip'));
+        setSavedMimeType(pendingMimeTypeRef.current);
         showStatus('✓ File received!', 'success');
       },
 
       onTransferError: (msg) => {
+        // Also stop the fake animation on error
+        if (fakeProgRef.current) {
+          clearInterval(fakeProgRef.current);
+          fakeProgRef.current = null;
+        }
         showStatus('❌ ' + msg, 'error');
         setProgVis(false);
         setSending(null);
@@ -256,6 +278,11 @@ export default function LocalScreen() {
     setReqVisible(false);
     if (!reqData) return;
 
+    // Capture the mime type now — reqData is cleared after this function returns
+    if (accepted) {
+      pendingMimeTypeRef.current = reqData.files[0]?.fileType || '';
+    }
+
     tmRef.current?.respondToTransfer(reqData.sessionId, accepted);
 
     if (accepted) {
@@ -264,21 +291,106 @@ export default function LocalScreen() {
       setProgPct(0); setProgStats('Receiving file…'); setProgDone(false);
       setProgVis(true);
 
-      // expo-http-server gives no streaming progress events — the phone goes
-      // straight from 0% to done. Animate the bar to 85% over ~2s so it
-      // doesn't look frozen, then onTransferComplete snaps it to 100%.
-      const steps = 17;
+      // expo-http-server gives no streaming progress events on the receiving side —
+      // the bar would sit at 0% until onTransferComplete fires.
+      // Instead we animate the bar: fast to 80% over ~2s (17 steps × 120ms),
+      // then slow creep (one tick per 400ms) so it never looks completely stuck.
+      // onTransferComplete (or onTransferError) clears fakeProgRef and snaps to 100%.
       let step = 0;
-      const iv = setInterval(() => {
+      const FAST_STEPS  = 17;   // 17 × 120ms = 2.04s → reaches 80%
+      const FAST_MS     = 120;
+      const SLOW_MS     = 400;
+
+      // Fast phase
+      const fastIv = setInterval(() => {
         step++;
-        setProgPct(Math.round((step / steps) * 85));
-        if (step >= steps) clearInterval(iv);
-      }, 120);
+        setProgPct(Math.round((step / FAST_STEPS) * 80));
+        if (step >= FAST_STEPS) {
+          clearInterval(fastIv);
+          // Slow creep phase — adds 1% roughly every 400ms, capped at 95%
+          let slowPct = 80;
+          const slowIv = setInterval(() => {
+            if (slowPct < 95) {
+              slowPct++;
+              setProgPct(slowPct);
+            }
+          }, SLOW_MS);
+          fakeProgRef.current = slowIv;
+        }
+      }, FAST_MS);
+      // Store fastIv too so an early completion clears it
+      fakeProgRef.current = fastIv;
     }
     setReqData(null);
   }
 
-  // ── Share / extract received file ─────────────────────────────────────────
+  // ── Save received file to device storage ─────────────────────────────────
+  // • Images / videos  → MediaLibrary.saveToLibraryAsync() → Photos / Gallery
+  // • Everything else  → StorageAccessFramework (SAF) → user picks destination
+  //                      (usually Downloads, but they can choose anywhere)
+  // A share fallback is provided if SAF is unavailable.
+  async function handleSaveToDevice() {
+    if (!savedUri) return;
+
+    const mimeType = savedMimeType || '';
+    const isMedia  = mimeType.startsWith('image/') || mimeType.startsWith('video/');
+
+    if (isMedia) {
+      // ── Gallery path ────────────────────────────────────────────────────
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission needed',
+          'Allow storage access in Settings to save files to your gallery.',
+        );
+        return;
+      }
+      try {
+        await MediaLibrary.saveToLibraryAsync(savedUri);
+        showStatus('✓ Saved to gallery!', 'success');
+      } catch (err: any) {
+        showStatus('❌ Could not save to gallery: ' + err.message, 'error');
+      }
+      return;
+    }
+
+    // ── SAF path (documents, ZIPs, APKs, etc.) ──────────────────────────
+    // StorageAccessFramework lets the user pick a folder / filename — no
+    // root access or MANAGE_EXTERNAL_STORAGE permission required.
+    const SAF = FileSystem.StorageAccessFramework;
+    if (!SAF) {
+      // Older Expo SDK or iOS — fall back to share sheet
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(savedUri);
+      return;
+    }
+
+    try {
+      const permissions = await SAF.requestDirectoryPermissionsAsync();
+      if (!permissions.granted) return;
+
+      // Create the file in the user-chosen directory
+      const destUri = await SAF.createFileAsync(
+        permissions.directoryUri,
+        savedName,
+        mimeType || 'application/octet-stream',
+      );
+
+      // Copy contents from cache → chosen destination
+      const base64 = await FileSystem.readAsStringAsync(savedUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      await SAF.writeAsStringAsync(destUri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      showStatus('✓ File saved!', 'success');
+    } catch (err: any) {
+      // User cancelled the folder picker — not an error
+      if (err.message?.includes('cancelled') || err.message?.includes('canceled')) return;
+      showStatus('❌ Could not save file: ' + err.message, 'error');
+    }
+  }
+
   async function handleShare() {
     if (!savedUri) return;
     if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(savedUri);
@@ -510,8 +622,11 @@ export default function LocalScreen() {
       >
         {progDone && savedUri && (
           <View style={{ gap: 8 }}>
-            <TouchableOpacity style={styles.dlBtn} onPress={handleShare}>
-              <Text style={styles.dlBtnText}>⬇️  Save / Share {savedName}</Text>
+            <TouchableOpacity style={styles.dlBtn} onPress={handleSaveToDevice}>
+              <Text style={styles.dlBtnText}>⬇️  Save {savedName}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.shareBtn} onPress={handleShare}>
+              <Text style={styles.shareBtnText}>↗️  Share / Forward</Text>
             </TouchableOpacity>
             {savedIsZip && (
               <SwyftButton label="📂 Extract ZIP" variant="outline" onPress={handleExtractZip} />
@@ -625,4 +740,6 @@ const styles = StyleSheet.create({
   sheetBtns:     { flexDirection: 'row', gap: 10 },
   dlBtn:     { backgroundColor: colors.green, borderRadius: radius.md, padding: 14, alignItems: 'center' },
   dlBtnText: { color: '#fff', fontWeight: '700', fontSize: font.base },
+  shareBtn:     { backgroundColor: 'transparent', borderRadius: radius.md, padding: 14, alignItems: 'center', borderWidth: 1, borderColor: colors.border },
+  shareBtnText: { color: colors.muted, fontWeight: '600', fontSize: font.base },
 });

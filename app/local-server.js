@@ -190,6 +190,32 @@ localApp.post('/prepare-upload', (req, res) => {
     const session = { req: { sessionId, from: body.info?.alias, fromId: body.info?.fingerprint, files: fileList }, accepted: null, tokens };
     sessions.set(sessionId, session);
 
+    // ── FIX: store sender identity in nearbyPeers so the peer card on the
+    // desktop shows the device's Swyft name (e.g. "Bright Falcon") instead of
+    // its raw IP address. This matters on corporate/managed WiFi where UDP
+    // multicast is blocked and the phone never appears via auto-discovery.
+    // The sender's IP is extracted from the TCP connection (req.socket.remoteAddress
+    // strips the IPv4-mapped IPv6 prefix "::ffff:"). ──────────────────────────────
+    const senderAlias       = body.info?.alias;
+    const senderFingerprint = body.info?.fingerprint;
+    const senderPort        = body.info?.port || SWYFT_PORT;
+    if (senderAlias && senderFingerprint) {
+      const senderIP = (req.socket?.remoteAddress || req.ip || '').replace('::ffff:', '');
+      nearbyPeers.set(senderFingerprint, {
+        alias:       senderAlias,
+        version:     body.info?.version     || PROTOCOL_VERSION,
+        deviceModel: body.info?.deviceModel || 'Unknown',
+        deviceType:  body.info?.deviceType  || 'mobile',
+        fingerprint: senderFingerprint,
+        port:        senderPort,
+        ip:          senderIP,
+        lastSeen:    Date.now(),
+        baseUrl:     `http://${senderIP}:${senderPort}`,
+      });
+      // Push the updated peer list to the desktop UI immediately
+      io.emit('nearby-peers', Array.from(nearbyPeers.values()));
+    }
+
     // Tell the desktop UI about the incoming request
     io.emit('incoming-request-local', { sessionId, from: session.req.from, files: fileList });
 
@@ -213,15 +239,20 @@ localApp.get('/transfer-status', (req, res) => {
   return res.json({ status: 'accepted' });
 });
 
-// POST /upload — receives base64-encoded file body as text/plain
-// Phone sends base64 string; desktop decodes it before writing to disk.
+// POST /upload — receives base64-encoded file body as text/plain.
+// Supports both single-shot uploads (no chunk headers) and chunked uploads
+// (X-Chunk-Index / X-Total-Chunks) from mobile clients. Chunked mode prevents
+// HTTP 413 on large files by keeping each POST body under ~700 KB base64.
 localApp.post('/upload', express.text({ type: '*/*', limit: '2gb' }), async (req, res) => {
   try {
-    const { sessionId, fileId, token } = req.query;
+    // Accept params from query string OR headers (desktop sends headers, mobile sends both)
+    const sessionId = req.query.sessionId || req.headers['x-session-id'];
+    const fileId    = req.query.fileId    || req.headers['x-file-id'];
+    const token     = req.query.token     || req.headers['x-token'];
+
     console.log('[upload] sessionId:', sessionId, 'fileId:', fileId);
 
     const session = sessions.get(sessionId);
-
     if (!session || session.accepted !== true) {
       console.warn('[upload] session not found or not accepted:', sessionId);
       return res.status(403).json({ message: 'Session not found or not accepted' });
@@ -237,23 +268,67 @@ localApp.post('/upload', express.text({ type: '*/*', limit: '2gb' }), async (req
 
     // Sanitise filename to prevent path traversal
     const safeName = path.basename(fileInfo.fileName).replace(/[^a-zA-Z0-9._\- ]/g, '_');
-    const dest     = path.join(os.homedir(), 'Downloads', safeName);
 
-    // Body is a base64 string (sent as text/plain by phone/mobile sender)
-    // Decode it back to binary before writing
+    // ── Chunked upload support ───────────────────────────────────────────────
+    // Mobile clients (localClient.ts) send files in 512 KB base64 chunks to
+    // avoid HTTP 413. Each chunk carries X-Chunk-Index and X-Total-Chunks headers.
+    // Single-shot uploads (no headers, or totalChunks=1) are still supported.
+    const chunkIndex  = parseInt(req.headers['x-chunk-index']  ?? req.query.chunkIndex  ?? '0', 10);
+    const totalChunks = parseInt(req.headers['x-total-chunks'] ?? req.query.totalChunks ?? '1', 10);
+
+    if (totalChunks > 1) {
+      // Multi-chunk path: accumulate in memory, write on final chunk.
+      // Using a per-session, per-file chunk map keyed by chunk index.
+      if (!session.chunks)          session.chunks = {};
+      if (!session.chunks[fileId])  session.chunks[fileId] = {};
+      session.chunks[fileId][chunkIndex] = req.body;  // store base64 slice
+
+      console.log(`[upload] chunk ${chunkIndex + 1}/${totalChunks} received for ${safeName}`);
+
+      // Emit approximate progress to the UI
+      const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+      io.emit('upload-progress-local', { sessionId, fileId, pct });
+
+      if (chunkIndex < totalChunks - 1) {
+        // Not the final chunk yet — acknowledge and wait for the next one
+        return res.json({ message: 'chunk received', chunkIndex });
+      }
+
+      // ── Final chunk: reassemble all parts in order ─────────────────────────
+      let fullBase64 = '';
+      for (let i = 0; i < totalChunks; i++) {
+        const part = session.chunks[fileId][i];
+        if (part === undefined) {
+          return res.status(400).json({ message: `Missing chunk ${i}` });
+        }
+        fullBase64 += part;
+      }
+      delete session.chunks[fileId];
+
+      const dest       = path.join(os.homedir(), 'Downloads', safeName);
+      const fileBuffer = Buffer.from(fullBase64, 'base64');
+      fs.writeFileSync(dest, fileBuffer);
+
+      console.log('[upload] chunked file saved to:', dest, '— size:', fileBuffer.length, 'bytes');
+      io.emit('transfer-complete-local', { sessionId, fileId, fileName: safeName, dest });
+
+      delete session.tokens[fileId];
+      if (Object.keys(session.tokens).length === 0) sessions.delete(sessionId);
+
+      return res.json({ message: 'received' });
+    }
+
+    // ── Single-shot path (original behaviour) ───────────────────────────────
+    // Body is a base64 string (sent as text/plain); decode it before writing.
+    const dest       = path.join(os.homedir(), 'Downloads', safeName);
     const fileBuffer = Buffer.from(req.body, 'base64');
     fs.writeFileSync(dest, fileBuffer);
 
     console.log('[upload] file saved to:', dest, '— size:', fileBuffer.length, 'bytes');
-
-    // Notify desktop UI
     io.emit('transfer-complete-local', { sessionId, fileId, fileName: safeName, dest });
 
-    // Clean up session
     delete session.tokens[fileId];
-    if (Object.keys(session.tokens).length === 0) {
-      sessions.delete(sessionId);
-    }
+    if (Object.keys(session.tokens).length === 0) sessions.delete(sessionId);
 
     res.json({ message: 'received' });
   } catch (err) {
@@ -288,6 +363,188 @@ localApp.post('/accept-session',  (req, res) => {
 localApp.post('/decline-session', (req, res) => {
   const s = sessions.get(req.body?.sessionId);
   if (s) s.accepted = false;
+  res.json({ ok: true });
+});
+
+// ── Desktop → Phone: send a file to a phone peer ─────────────────────────────
+//
+// local.html calls POST /send-to-phone with { peerIP, peerPort, filePath } after
+// the user selects a file and taps a phone peer card with the "↓ Send to phone"
+// action. This endpoint reads the file, encodes it as base64, and drives the
+// same /prepare-upload → poll → /upload flow that mobile-to-desktop uses —
+// but in reverse: the DESKTOP is now the sender and the PHONE is the receiver.
+//
+// Progress is streamed back to the UI via socket.io 'send-to-phone-progress'.
+//
+// Note: the file content is read from disk using a path the Electron main process
+// set when serving the file. For drag-and-drop / file-picker flows, local.html
+// passes the raw File object contents as base64 in the request body instead.
+
+const activeSendToPhone = new Map();  // sessionId → AbortController
+
+localApp.post('/send-to-phone', express.json({ limit: '10mb' }), async (req, res) => {
+  // Validate required fields
+  const { peerIP, peerPort = SWYFT_PORT, fileName, fileSize, fileBase64 } = req.body || {};
+  if (!peerIP || !fileName || !fileBase64) {
+    return res.status(400).json({ message: 'Missing peerIP, fileName, or fileBase64' });
+  }
+
+  const peerBaseUrl = `http://${peerIP}:${peerPort}`;
+
+  // Respond immediately — progress comes via socket.io
+  res.json({ ok: true, message: 'Send started' });
+
+  // Run the send asynchronously
+  (async () => {
+    const fileId    = Math.random().toString(36).slice(2);
+    let sessionId   = null;
+
+    try {
+      // 1. Prepare-upload to the phone
+      io.emit('send-to-phone-progress', { pct: 0, status: 'requesting', peerIP });
+      const prepareBody = {
+        info: {
+          alias:       DEVICE_NAME,
+          version:     PROTOCOL_VERSION,
+          deviceModel: `${os.type()} ${os.release()}`,
+          deviceType:  'desktop',
+          fingerprint: DEVICE_ID,
+          port:        SWYFT_PORT,
+          protocol:    'http',
+          download:    true,
+        },
+        files: {
+          [fileId]: { id: fileId, fileName, size: fileSize || 0, fileType: 'application/octet-stream' },
+        },
+      };
+
+      const prepCtrl  = new AbortController();
+      const prepTimer = setTimeout(() => prepCtrl.abort(), 10000);
+      let prepData;
+      try {
+        const prepRes = await fetch(`${peerBaseUrl}/prepare-upload`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(prepareBody),
+          signal:  prepCtrl.signal,
+        });
+        clearTimeout(prepTimer);
+        if (!prepRes.ok) throw new Error(`HTTP ${prepRes.status}`);
+        prepData = await prepRes.json();
+      } catch (err) {
+        io.emit('send-to-phone-progress', { pct: 0, status: 'error', error: 'Cannot reach phone: ' + err.message, peerIP });
+        return;
+      }
+
+      sessionId = prepData.sessionId;
+      const token = prepData.files?.[fileId];
+      if (!token) {
+        io.emit('send-to-phone-progress', { pct: 0, status: 'error', error: 'No upload token from phone', peerIP });
+        return;
+      }
+
+      // Register abort controller so the transfer can be cancelled
+      const abortCtrl = new AbortController();
+      activeSendToPhone.set(sessionId, abortCtrl);
+
+      // 2. Poll phone's /transfer-status until accepted (35s max)
+      io.emit('send-to-phone-progress', { pct: 0, status: 'waiting', sessionId, peerIP });
+      const deadline = Date.now() + 35000;
+      let decided    = false;
+
+      while (Date.now() < deadline) {
+        if (abortCtrl.signal.aborted) {
+          io.emit('send-to-phone-progress', { pct: 0, status: 'cancelled', sessionId, peerIP });
+          return;
+        }
+        await new Promise(r => setTimeout(r, 400));
+        try {
+          const statusRes  = await fetch(
+            `${peerBaseUrl}/transfer-status?sessionId=${encodeURIComponent(sessionId)}`,
+            { signal: AbortSignal.timeout(5000) }
+          );
+          const statusData = await statusRes.json();
+          if (statusData.status === 'accepted') { decided = true; break; }
+          if (statusData.status === 'declined') {
+            io.emit('send-to-phone-progress', { pct: 0, status: 'declined', sessionId, peerIP });
+            activeSendToPhone.delete(sessionId);
+            return;
+          }
+        } catch (_) { /* keep polling */ }
+      }
+
+      if (!decided) {
+        io.emit('send-to-phone-progress', { pct: 0, status: 'timeout', sessionId, peerIP });
+        activeSendToPhone.delete(sessionId);
+        return;
+      }
+
+      // 3. Upload in 64 KB chunks.
+      // expo-http-server on Android has a much lower body-size limit than Node/Express.
+      // 512 KB chunks (the mobile→desktop size) cause HTTP 413 on the phone.
+      // 64 KB raw → ~85 KB base64 per POST stays well within expo-http-server's limit.
+      const CHUNK_BYTES   = 64 * 1024;
+      const b64ChunkSize  = Math.ceil(CHUNK_BYTES * 4 / 3);
+      const totalChunks   = Math.ceil(fileBase64.length / b64ChunkSize) || 1;
+
+      for (let i = 0; i < totalChunks; i++) {
+        if (abortCtrl.signal.aborted) {
+          io.emit('send-to-phone-progress', { pct: 0, status: 'cancelled', sessionId, peerIP });
+          activeSendToPhone.delete(sessionId);
+          return;
+        }
+
+        const chunk = fileBase64.slice(i * b64ChunkSize, (i + 1) * b64ChunkSize);
+        const uploadRes = await fetch(
+          `${peerBaseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
+          {
+            method:  'POST',
+            headers: {
+              'Content-Type':   'text/plain',
+              'X-File-Name':    encodeURIComponent(fileName),
+              'X-Chunk-Index':  String(i),
+              'X-Total-Chunks': String(totalChunks),
+            },
+            body:   chunk,
+            signal: abortCtrl.signal,
+          }
+        );
+
+        if (!uploadRes.ok) {
+          const errText = await uploadRes.text().catch(() => '');
+          io.emit('send-to-phone-progress', {
+            pct: Math.round((i / totalChunks) * 100),
+            status: 'error',
+            error:  `Chunk ${i + 1}/${totalChunks} failed: HTTP ${uploadRes.status} ${errText}`,
+            peerIP,
+          });
+          activeSendToPhone.delete(sessionId);
+          return;
+        }
+
+        const pct = Math.round(((i + 1) / totalChunks) * 100);
+        io.emit('send-to-phone-progress', { pct, status: 'uploading', sessionId, peerIP });
+      }
+
+      io.emit('send-to-phone-progress', { pct: 100, status: 'done', sessionId, fileName, peerIP });
+      activeSendToPhone.delete(sessionId);
+    } catch (err) {
+      io.emit('send-to-phone-progress', {
+        pct: 0, status: 'error', error: err.message,
+        sessionId: sessionId || null, peerIP,
+      });
+      if (sessionId) activeSendToPhone.delete(sessionId);
+    }
+  })();
+});
+
+// Cancel a desktop→phone send in progress
+localApp.post('/cancel-send-to-phone', express.json({ limit: '1kb' }), (req, res) => {
+  const { sessionId } = req.body || {};
+  if (sessionId && activeSendToPhone.has(sessionId)) {
+    activeSendToPhone.get(sessionId).abort();
+    activeSendToPhone.delete(sessionId);
+  }
   res.json({ ok: true });
 });
 
