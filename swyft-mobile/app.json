@@ -22,15 +22,21 @@
         "NSLocalNetworkUsageDescription": "Swyft uses the local network to transfer files between nearby devices.",
         "NSBonjourServices": [
           "_http._tcp",
+          "_swyft._tcp",
+          "_http._tcp",
           "_swyft._tcp"
         ],
         "UIBackgroundModes": [
           "fetch",
+          "processing",
+          "fetch",
           "processing"
         ],
         "NSPhotoLibraryUsageDescription": "Swyft can save received files to your photo library.",
-        "NSMicrophoneUsageDescription": "Swyft does not use the microphone — required by WebRTC framework."
-      }
+        "NSMicrophoneUsageDescription": "Swyft does not use the microphone — required by WebRTC framework.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bitcode": false
     },
     "android": {
       "adaptiveIcon": {
@@ -52,7 +58,13 @@
         "VIBRATE",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.BLUETOOTH"
       ],
       "newArchEnabled": false
     },
@@ -92,7 +104,6 @@
       ],
       "@config-plugins/react-native-webrtc",
       "expo-asset"
-      
     ],
     "experiments": {
       "typedRoutes": true
