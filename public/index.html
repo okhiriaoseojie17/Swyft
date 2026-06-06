@@ -21,6 +21,8 @@
   <link rel="manifest" href="site.webmanifest?v=v1" />
   <!-- Vercel Analytics: tracks page visitors automatically -->
   <script defer src="/_vercel/insights/script.js"></script>
+  <!-- Umami Analytics -->
+  <script defer src="https://cloud.umami.is/script.js" data-website-id="8790f3bf-e132-468b-a542-b64a4445da69"></script>
 </head>
 <body>
   <div class="container">
@@ -250,15 +252,17 @@
       .desktop-row { grid-template-columns: 1fr; }
     }
   </style>
-  <!-- Download click tracking via Google Analytics -->
+  <!-- Download click tracking via Google Analytics + Umami -->
   <script>
     document.querySelectorAll('.dl-btn:not(.disabled)').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var platform = btn.querySelector('.dl-platform');
         if (platform) {
-          gtag('event', 'download_click', {
-            platform: platform.textContent.trim()
-          });
+          var name = platform.textContent.trim();
+          // Google Analytics
+          gtag('event', 'download_click', { platform: name });
+          // Umami
+          if (window.umami) umami.track('download_click', { platform: name });
         }
       });
     });
