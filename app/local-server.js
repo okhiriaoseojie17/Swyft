@@ -64,7 +64,7 @@ localApp.use((req, res, next) => {
 // express.text() parser with a 2 GB limit. If the global JSON parser runs
 // first on a large upload it will reject it with 413 before the route fires.
 localApp.use((req, res, next) => {
-  if (req.path === '/upload') return next();
+  if (req.path === '/upload' || req.path === '/send-to-phone') return next();
   express.json({ limit: '10mb' })(req, res, next);
 });
 localApp.use(express.static(path.join(__dirname, 'src')));
@@ -382,12 +382,13 @@ localApp.post('/decline-session', (req, res) => {
 
 const activeSendToPhone = new Map();  // sessionId → AbortController
 
-localApp.post('/send-to-phone', express.json({ limit: '10mb' }), async (req, res) => {
+localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res) => {
   // Validate required fields
-  const { peerIP, peerPort = SWYFT_PORT, fileName, fileSize, fileBase64 } = req.body || {};
+  const { peerIP, peerPort = SWYFT_PORT, fileName, fileSize, fileBase64, fileType } = req.body || {};
   if (!peerIP || !fileName || !fileBase64) {
     return res.status(400).json({ message: 'Missing peerIP, fileName, or fileBase64' });
   }
+  const resolvedFileType = fileType || 'application/octet-stream';
 
   const peerBaseUrl = `http://${peerIP}:${peerPort}`;
 
@@ -414,7 +415,7 @@ localApp.post('/send-to-phone', express.json({ limit: '10mb' }), async (req, res
           download:    true,
         },
         files: {
-          [fileId]: { id: fileId, fileName, size: fileSize || 0, fileType: 'application/octet-stream' },
+          [fileId]: { id: fileId, fileName, size: fileSize || 0, fileType: resolvedFileType },
         },
       };
 
@@ -502,6 +503,12 @@ localApp.post('/send-to-phone', express.json({ limit: '10mb' }), async (req, res
             headers: {
               'Content-Type':   'text/plain',
               'X-File-Name':    encodeURIComponent(fileName),
+              // Redundantly send params as X-* headers so expo-http-server's
+              // parseQueryParams() fallback (which reads headers) can find them
+              // even when paramsJson is empty (common on Android).
+              'X-Session-Id':   sessionId,
+              'X-File-Id':      fileId,
+              'X-Token':        token,
               'X-Chunk-Index':  String(i),
               'X-Total-Chunks': String(totalChunks),
             },

@@ -133,6 +133,10 @@ export default function LocalScreen() {
         // BUGFIX: also dismiss the incoming-request prompt if it's still showing.
         // Previously, if the sender cancelled before the user tapped Accept/Decline,
         // the request sheet stayed visible and could still be acted on.
+        if (fakeProgRef.current) {
+          clearInterval(fakeProgRef.current);
+          fakeProgRef.current = null;
+        }
         setReqVisible(false);
         setReqData(null);
         showStatus('❌ Transfer cancelled by other device', 'error');
@@ -185,8 +189,13 @@ export default function LocalScreen() {
         showStatus('Zipping ' + assets.length + ' files…', 'info');
         const { buffer, name } = await zipFiles(assets.map(a => ({ uri: a.uri, name: a.name })));
         const tmpUri = FileSystem.cacheDirectory + name;
-        const arr = new Uint8Array(buffer);
-        let b64 = ''; arr.forEach(b => b64 += String.fromCharCode(b));
+      // Convert ArrayBuffer → base64 in 8 KB steps to avoid stack overflow.
+        const arr  = new Uint8Array(buffer);
+        const STEP = 8192;
+        let b64 = '';
+        for (let i = 0; i < arr.length; i += STEP) {
+          b64 += String.fromCharCode(...arr.subarray(i, i + STEP));
+        }
         await FileSystem.writeAsStringAsync(tmpUri, btoa(b64), {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -614,8 +623,14 @@ export default function LocalScreen() {
         stats={progStats}
         done={progDone}
         onCancel={async () => {
+          // Kill fake progress animation immediately
+          if (fakeProgRef.current) {
+            clearInterval(fakeProgRef.current);
+            fakeProgRef.current = null;
+          }
           await tmRef.current?.cancelTransfer();
           setProgVis(false);
+          setSending(null);
           showStatus('Transfer cancelled', 'info');
         }}
         onClose={() => setProgVis(false)}

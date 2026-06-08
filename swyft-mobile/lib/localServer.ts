@@ -34,7 +34,7 @@
  * Endpoints:
  *   GET  /info                          → device info
  *   POST /prepare-upload                → registers session, returns pending immediately
- *   POST /transfer-status               → 'pending' | 'accepted' | 'declined'
+ *   GET  /transfer-status               → 'pending' | 'accepted' | 'declined'
  *   POST /upload?sessionId=&fileId=&token= → receive base64 chunk(s)
  *   POST /cancel                        → cancel session
  */
@@ -218,8 +218,8 @@ export class LocalServer {
       }
     });
 
-    // ── POST /transfer-status ────────────────────────────────────
-    route('/transfer-status', 'POST', async (req: RequestEvent): Promise<HttpResponse> => {
+    // ── GET /transfer-status ─────────────────────────────────────
+    route('/transfer-status', 'GET', async (req: RequestEvent): Promise<HttpResponse> => {
       console.log('[LocalServer] /transfer-status headersJson:', req.headersJson,
                   'paramsJson:', req.paramsJson);
 
@@ -401,6 +401,17 @@ export class LocalServer {
     try { stop(); } catch (_) {}
     this.sessions.clear();
     console.log('[LocalServer] stopped');
+  }
+
+  /** Called when the receiver taps Cancel mid-transfer — cleans up session so further chunks get 403'd. */
+  cancelSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.accepted = false;  // causes subsequent /upload to return 403
+    }
+    this.sessions.delete(sessionId);
+    this.cb.onTransferCancelled(sessionId);
+    console.log('[LocalServer] session cancelled by receiver:', sessionId);
   }
 
   respondToSession(sessionId: string, accepted: boolean): void {

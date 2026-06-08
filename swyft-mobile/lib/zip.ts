@@ -18,7 +18,7 @@ export async function zipFiles(uris: { uri: string; name: string }[]): Promise<{
     zip.file(name, base64, { base64: true });
   }
 
-  const blob   = await zip.generateAsync({ type: 'arraybuffer' });
+  const blob   = await zip.generateAsync({ type: 'arraybuffer', compression: 'STORE' });
   return { buffer: blob, name: 'archive.zip' };
 }
 

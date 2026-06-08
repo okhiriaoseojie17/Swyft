@@ -963,6 +963,9 @@
     openProgress('Sending', selectedFile.name);
     isTransferring = true; isCancelled = false;
     abortCtrl = new AbortController();
+    // Track for cancelTransfer()
+    window._activeSendPeer    = peer;
+    window._activeSendSession = sessionId;
 
     // ── Send file in 512 KB chunks as base64 ─────────────────────
     // expo-http-server buffers the entire request body before handing it to JS.
@@ -1022,6 +1025,8 @@
       }
 
       isTransferring = false;
+      window._activeSendPeer    = null;
+      window._activeSendSession = null;
       document.getElementById('progFill').style.width      = '100%';
       document.getElementById('progTitle').textContent     = '✓ Sent!';
       document.getElementById('progStats').textContent     = fmtSize(total) + ' transferred';
@@ -1030,6 +1035,8 @@
       showStatus('✓ File sent!', 'success');
     } catch (err) {
       isTransferring = false;
+      window._activeSendPeer    = null;
+      window._activeSendSession = null;
       if (!isCancelled) showStatus('❌ Send error: ' + err.message, 'error');
       closeProgress();
     }
@@ -1040,6 +1047,18 @@
     isCancelled    = true;
     isTransferring = false;
     abortCtrl?.abort();
+    // If we know which peer and session we were sending to, notify the phone
+    // so it cleans up the session and re-enables Accept prompts.
+    if (window._activeSendPeer && window._activeSendSession) {
+      const cancelUrl = `http://${window._activeSendPeer.ip}:${window._activeSendPeer.port || 53317}/cancel`;
+      fetch(cancelUrl, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ sessionId: window._activeSendSession }),
+      }).catch(() => {});
+      window._activeSendPeer    = null;
+      window._activeSendSession = null;
+    }
     showStatus('Transfer cancelled', 'info');
     closeProgress();
   }
@@ -1218,6 +1237,7 @@
           peerPort:   peer.port || 53317,
           fileName:   selectedFile.name,
           fileSize:   selectedFile.size,
+          fileType:   selectedFile.type || 'application/octet-stream',
           fileBase64,
         }),
       });
@@ -1239,15 +1259,16 @@
   async function cancelSendToPhone() {
     if (!confirm('Cancel this transfer?')) return;
     isCancelled = true;
-    if (sendToPhoneSession) {
-      try {
-        await fetch(`${LOCAL_URL}/cancel-send-to-phone`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ sessionId: sendToPhoneSession }),
-        });
-      } catch (_) {}
-    }
+    // POST cancel to backend — it will abort the in-flight fetch via AbortController.
+    // sendToPhoneSession may be null if the user cancels before the socket.io progress
+    // event arrives; send null so the backend can still clean up.
+    try {
+      await fetch(`${LOCAL_URL}/cancel-send-to-phone`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ sessionId: sendToPhoneSession || null }),
+      });
+    } catch (_) {}
     closeSendPhoneProgress();
     showStatus('Transfer cancelled', 'info');
   }

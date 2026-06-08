@@ -167,10 +167,18 @@ export class TransferManager {
   // ── Cancel active outbound transfer ──────────────────────────────────────
 
   async cancelTransfer(): Promise<void> {
-    if (this.activePeer && this.activeSession) {
+    // Cancel outbound (we are the sender)
+    if (this.activePeer && this.activeSession && this.activeSession !== '__pending__') {
       await this.client?.cancelSession(this.activePeer, this.activeSession);
     }
-    this.activePeer   = null;
+    // Cancel inbound (we are the receiver — notify sender via their /cancel endpoint)
+    if (this.activeSession && !this.activePeer) {
+      // activeSession is set by respondToTransfer() when we accepted.
+      // We don't have a direct reference to the sender here, so just delete the session
+      // so any subsequent upload chunks get 403'd.
+      this.server?.cancelSession(this.activeSession);
+    }
+    this.activePeer    = null;
     this.activeSession = null;
   }
 }
