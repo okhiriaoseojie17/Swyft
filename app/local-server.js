@@ -88,11 +88,17 @@ try   { DEVICE_ID = fs.readFileSync(ID_FILE, 'utf8').trim(); }
 catch { DEVICE_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
         fs.writeFileSync(ID_FILE, DEVICE_ID); }
 
-const NAME_FILE = path.join(TMP, 'swyft_device_name_v2.txt');
+const NAME_FILE = path.join(TMP, 'swyft_device_name_v3.txt');  // bumped v2→v3: the old
+                                                                 // v2 file has the typo'd
+                                                                 // "Swift ..." name cached,
+                                                                 // and editing the word list
+                                                                 // alone never re-triggers
+                                                                 // generation since this file
+                                                                 // already exists on disk.
 let DEVICE_NAME;
 try { DEVICE_NAME = fs.readFileSync(NAME_FILE, 'utf8').trim(); }
 catch {
-  const adj  = ['Swift','Bright','Cool','Fast','Sharp','Bold','Clear'];
+  const adj  = ['Swyft','Bright','Cool','Fast','Sharp','Bold','Clear'];
   const noun = ['Falcon','Tiger','Panda','Eagle','Fox','Wolf','Hawk'];
   DEVICE_NAME = adj[Math.floor(Math.random()*adj.length)] + ' ' +
                 noun[Math.floor(Math.random()*noun.length)];
@@ -384,13 +390,22 @@ const activeSendToPhone = new Map();  // sessionId → AbortController
 
 localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res) => {
   // Validate required fields
-  const { peerIP, peerPort = SWYFT_PORT, fileName, fileSize, fileBase64, fileType } = req.body || {};
+  const { peerIP, peerPort = SWYFT_PORT, fileName, fileSize, fileBase64, fileType, clientId } = req.body || {};
   if (!peerIP || !fileName || !fileBase64) {
     return res.status(400).json({ message: 'Missing peerIP, fileName, or fileBase64' });
   }
   const resolvedFileType = fileType || 'application/octet-stream';
 
   const peerBaseUrl = `http://${peerIP}:${peerPort}`;
+
+  // Register the abort controller under the browser-generated clientId RIGHT
+  // NOW, before prepare-upload even fires. Previously this only happened
+  // after the real sessionId came back from the phone, so tapping Cancel
+  // during the "requesting" / "waiting for accept" window did nothing — the
+  // backend kept going regardless, and would still upload the file if the
+  // phone tapped Accept after Cancel had already been tapped on desktop.
+  const abortCtrl = new AbortController();
+  if (clientId) activeSendToPhone.set(clientId, abortCtrl);
 
   // Respond immediately — progress comes via socket.io
   res.json({ ok: true, message: 'Send started' });
@@ -434,6 +449,7 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
         prepData = await prepRes.json();
       } catch (err) {
         io.emit('send-to-phone-progress', { pct: 0, status: 'error', error: 'Cannot reach phone: ' + err.message, peerIP });
+        if (clientId) activeSendToPhone.delete(clientId);
         return;
       }
 
@@ -441,12 +457,24 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
       const token = prepData.files?.[fileId];
       if (!token) {
         io.emit('send-to-phone-progress', { pct: 0, status: 'error', error: 'No upload token from phone', peerIP });
+        if (clientId) activeSendToPhone.delete(clientId);
         return;
       }
 
-      // Register abort controller so the transfer can be cancelled
-      const abortCtrl = new AbortController();
-      activeSendToPhone.set(sessionId, abortCtrl);
+      // The user may have already hit Cancel while prepare-upload was still
+      // in flight — abortCtrl would already be aborted even though sessionId
+      // didn't exist yet at that point. Tell the phone to drop the session
+      // it just created instead of moving on to polling/uploading.
+      if (abortCtrl.signal.aborted) {
+        fetch(`${peerBaseUrl}/cancel`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ sessionId }),
+        }).catch(() => {});
+        io.emit('send-to-phone-progress', { pct: 0, status: 'cancelled', sessionId, peerIP });
+        if (clientId) activeSendToPhone.delete(clientId);
+        return;
+      }
 
       // 2. Poll phone's /transfer-status until accepted (35s max)
       io.emit('send-to-phone-progress', { pct: 0, status: 'waiting', sessionId, peerIP });
@@ -456,6 +484,7 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
       while (Date.now() < deadline) {
         if (abortCtrl.signal.aborted) {
           io.emit('send-to-phone-progress', { pct: 0, status: 'cancelled', sessionId, peerIP });
+          if (clientId) activeSendToPhone.delete(clientId);
           return;
         }
         await new Promise(r => setTimeout(r, 400));
@@ -468,7 +497,7 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
           if (statusData.status === 'accepted') { decided = true; break; }
           if (statusData.status === 'declined') {
             io.emit('send-to-phone-progress', { pct: 0, status: 'declined', sessionId, peerIP });
-            activeSendToPhone.delete(sessionId);
+            if (clientId) activeSendToPhone.delete(clientId);
             return;
           }
         } catch (_) { /* keep polling */ }
@@ -476,7 +505,7 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
 
       if (!decided) {
         io.emit('send-to-phone-progress', { pct: 0, status: 'timeout', sessionId, peerIP });
-        activeSendToPhone.delete(sessionId);
+        if (clientId) activeSendToPhone.delete(clientId);
         return;
       }
 
@@ -491,7 +520,7 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
       for (let i = 0; i < totalChunks; i++) {
         if (abortCtrl.signal.aborted) {
           io.emit('send-to-phone-progress', { pct: 0, status: 'cancelled', sessionId, peerIP });
-          activeSendToPhone.delete(sessionId);
+          if (clientId) activeSendToPhone.delete(clientId);
           return;
         }
 
@@ -525,7 +554,7 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
             error:  `Chunk ${i + 1}/${totalChunks} failed: HTTP ${uploadRes.status} ${errText}`,
             peerIP,
           });
-          activeSendToPhone.delete(sessionId);
+          if (clientId) activeSendToPhone.delete(clientId);
           return;
         }
 
@@ -534,23 +563,23 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
       }
 
       io.emit('send-to-phone-progress', { pct: 100, status: 'done', sessionId, fileName, peerIP });
-      activeSendToPhone.delete(sessionId);
+      if (clientId) activeSendToPhone.delete(clientId);
     } catch (err) {
       io.emit('send-to-phone-progress', {
         pct: 0, status: 'error', error: err.message,
         sessionId: sessionId || null, peerIP,
       });
-      if (sessionId) activeSendToPhone.delete(sessionId);
+      if (clientId) activeSendToPhone.delete(clientId);
     }
   })();
 });
 
 // Cancel a desktop→phone send in progress
 localApp.post('/cancel-send-to-phone', express.json({ limit: '1kb' }), (req, res) => {
-  const { sessionId } = req.body || {};
-  if (sessionId && activeSendToPhone.has(sessionId)) {
-    activeSendToPhone.get(sessionId).abort();
-    activeSendToPhone.delete(sessionId);
+  const { clientId } = req.body || {};
+  if (clientId && activeSendToPhone.has(clientId)) {
+    activeSendToPhone.get(clientId).abort();
+    activeSendToPhone.delete(clientId);
   }
   res.json({ ok: true });
 });

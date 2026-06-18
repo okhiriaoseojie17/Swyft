@@ -52,6 +52,7 @@ export class LocalClient {
     peer:  SwyftPeer,
     files: { uri: string; name: string; size: number; mimeType: string }[],
     cb:    SendCallbacks,
+    cancelFlag?: { cancelled: boolean },
   ): Promise<void> {
 
     // 1. Build prepare-upload body
@@ -111,6 +112,7 @@ export class LocalClient {
       let decided    = false;
 
       while (Date.now() < deadline) {
+        if (cancelFlag?.cancelled) throw new Error('Cancelled by user');
         await new Promise(r => setTimeout(r, 400));  // was 1000ms
 
         try {
@@ -150,6 +152,7 @@ export class LocalClient {
         token,
         localFile,
         cb,
+        cancelFlag,
       );
     }
   }
@@ -187,6 +190,7 @@ export class LocalClient {
     token:     string,
     file:      { uri: string; name: string; size: number; mimeType: string },
     cb:        SendCallbacks,
+    cancelFlag?: { cancelled: boolean },
   ): Promise<void> {
     try {
       cb.onProgress(fileId, 0, file.size);
@@ -204,6 +208,7 @@ export class LocalClient {
       const totalChunks  = Math.ceil(fullBase64.length / b64ChunkSize) || 1;
 
       for (let i = 0; i < totalChunks; i++) {
+        if (cancelFlag?.cancelled) throw new Error('Cancelled by user');
         const chunk = fullBase64.slice(i * b64ChunkSize, (i + 1) * b64ChunkSize);
 
         const res = await fetch(

@@ -318,45 +318,35 @@ export class LocalServer {
         }
         session.chunksReceived.get(fileId)!.add(chunkIndex);
 
-        // Emit progress: use chunks as a proxy for bytes received
+        // Emit progress: use chunks as a proxy for bytes received.
+        // IMPORTANT: this is proportional to totalChunks rather than a
+        // hardcoded byte-per-chunk size. Different senders use different
+        // chunk sizes (mobile→mobile sends 512 KB chunks, desktop→phone
+        // sends 64 KB chunks) — hardcoding 512 KB here made the progress
+        // bar for desktop→phone transfers jump to ~100% after only the
+        // first real chunk, then sit there while the real upload continued
+        // in the background for several more seconds.
         const chunksIn = session.chunksReceived.get(fileId)!.size;
-        const approxReceived = Math.min(chunksIn * 512 * 1024, fileInfo.size);
+        const approxReceived = Math.min(
+          Math.round((chunksIn / totalChunks) * fileInfo.size),
+          fileInfo.size,
+        );
         this.cb.onTransferProgress(sessionId, fileId, approxReceived, fileInfo.size);
 
-        // Not the final chunk — acknowledge and wait for next
+        // Acknowledge every chunk immediately — including the final one.
+        // Reassembly (below) can take a while for large files, and
+        // expo-http-server only processes one request at a time; blocking
+        // this response until reassembly finishes would tie up the server
+        // thread and make the NEXT transfer attempt hang indefinitely.
+        // So we ack now and assemble in the background instead.
         if (chunkIndex < totalChunks - 1) {
           return json(200, { message: 'chunk received', chunkIndex });
         }
 
-        // ── Final chunk — reassemble all parts ────────────────────
-        const dest = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
-        let assembled = '';
+        this._assembleFile(sessionId, fileId, safeName, totalChunks, session)
+          .catch((err: any) => this.cb.onError('Assembly error: ' + err.message));
 
-        for (let i = 0; i < totalChunks; i++) {
-          const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
-          const part = await FileSystem.readAsStringAsync(partPath, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          assembled += part;
-          // Delete chunk temp file immediately to free space
-          await FileSystem.deleteAsync(partPath, { idempotent: true });
-        }
-
-        await FileSystem.writeAsStringAsync(dest, assembled, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-
-        console.log('[LocalServer] file assembled and saved:', dest);
-
-        session.tokens.delete(fileId);
-        session.chunksReceived.delete(fileId);
-        this.cb.onTransferComplete(sessionId, fileId, dest);
-
-        if (session.tokens.size === 0) {
-          this.sessions.delete(sessionId);
-        }
-
-        return json(200, { message: 'received' });
+        return json(200, { message: 'chunk received', chunkIndex });
       } catch (err: any) {
         console.warn('[LocalServer] /upload error:', err.message);
         this.cb.onError('Upload error: ' + err.message);
@@ -412,6 +402,49 @@ export class LocalServer {
     this.sessions.delete(sessionId);
     this.cb.onTransferCancelled(sessionId);
     console.log('[LocalServer] session cancelled by receiver:', sessionId);
+  }
+
+  /**
+   * Reassembles all received chunks for a file into the final destination file.
+   * Runs AFTER the final chunk's HTTP response has already been sent, so it
+   * never blocks expo-http-server's single request-handling thread. Without
+   * this, a slow reassembly (more chunks = more sequential disk round-trips)
+   * could tie up the only server thread long enough that the NEXT transfer
+   * attempt's /prepare-upload never even gets picked up.
+   */
+  private async _assembleFile(
+    sessionId: string,
+    fileId: string,
+    safeName: string,
+    totalChunks: number,
+    session: PendingSession,
+  ): Promise<void> {
+    const dest = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
+    let assembled = '';
+
+    for (let i = 0; i < totalChunks; i++) {
+      const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+      const part = await FileSystem.readAsStringAsync(partPath, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      assembled += part;
+      // Delete chunk temp file immediately to free space
+      await FileSystem.deleteAsync(partPath, { idempotent: true });
+    }
+
+    await FileSystem.writeAsStringAsync(dest, assembled, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+
+    console.log('[LocalServer] file assembled and saved:', dest);
+
+    session.tokens.delete(fileId);
+    session.chunksReceived.delete(fileId);
+    this.cb.onTransferComplete(sessionId, fileId, dest);
+
+    if (session.tokens.size === 0) {
+      this.sessions.delete(sessionId);
+    }
   }
 
   respondToSession(sessionId: string, accepted: boolean): void {

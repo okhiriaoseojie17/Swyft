@@ -571,9 +571,13 @@
     // not be silently overwritten by a stale snapshot from the other.
     socket.on('nearby-peers', (list) => {
       mergePeers(list);
-      // Remove peers the backend has expired (not in the new list)
+      // Remove peers the backend has expired — but never a manually-connected
+      // peer (p.manual === true). The backend's list only ever contains
+      // UDP-discovered peers, so it has no way to know about anything typed
+      // in via "Using a corporate network?", and this filter would otherwise
+      // wipe a manual entry out within seconds of finding it.
       nearbyPeers = nearbyPeers.filter(p =>
-        list.some(x => x.fingerprint === p.fingerprint)
+        p.manual || list.some(x => x.fingerprint === p.fingerprint)
       );
       renderPeers();
     });
@@ -847,7 +851,7 @@
     showStatus('Zipping ' + files.length + ' files…', 'info');
     const zip = new JSZip();
     for (const f of files) zip.file(f.webkitRelativePath || f.name, f);
-    const blob = await zip.generateAsync({ type: 'blob' });
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
     selectedFile = new File([blob], 'archive.zip', { type: 'application/zip' });
     updateFileInfo();
     showStatus('✓ ZIP ready — ' + fmtSize(blob.size), 'success');
@@ -1193,11 +1197,16 @@
   // The desktop backend (/send-to-phone) drives the HTTP flow so the browser
   // doesn't have to deal with CORS or chunking logic directly.
 
-  let sendToPhoneSession = null;
+  let sendToPhoneSession  = null;
+  let sendToPhoneClientId = null;   // exists from the start — lets Cancel work
+                                     // even before the backend's real sessionId
+                                     // comes back over socket.io
 
   async function sendToPhone(peer) {
     if (!selectedFile) { showStatus('⚠️ Pick a file first', 'error'); return; }
     if (isTransferring) { showStatus('⚠️ Transfer already in progress', 'error'); return; }
+
+    sendToPhoneClientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
     // Read file as base64 in the browser, then hand off to backend
     showStatus(`Reading file for ${peer.alias}…`, 'info');
@@ -1239,6 +1248,7 @@
           fileSize:   selectedFile.size,
           fileType:   selectedFile.type || 'application/octet-stream',
           fileBase64,
+          clientId:   sendToPhoneClientId,
         }),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -1252,21 +1262,24 @@
 
   function closeSendPhoneProgress() {
     document.getElementById('sendPhoneOverlay').classList.remove('visible');
-    isTransferring    = false;
-    sendToPhoneSession = null;
+    isTransferring      = false;
+    sendToPhoneSession  = null;
+    sendToPhoneClientId = null;
   }
 
   async function cancelSendToPhone() {
     if (!confirm('Cancel this transfer?')) return;
     isCancelled = true;
-    // POST cancel to backend — it will abort the in-flight fetch via AbortController.
-    // sendToPhoneSession may be null if the user cancels before the socket.io progress
-    // event arrives; send null so the backend can still clean up.
+    // Send clientId — it's registered with the backend from the moment
+    // sendToPhone() fires, so this works even if Cancel is tapped before
+    // the real sessionId comes back over socket.io (previously this sent
+    // sessionId, which was still null at that point, so the cancel request
+    // matched nothing and the transfer kept going).
     try {
       await fetch(`${LOCAL_URL}/cancel-send-to-phone`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ sessionId: sendToPhoneSession || null }),
+        body:    JSON.stringify({ clientId: sendToPhoneClientId || null }),
       });
     } catch (_) {}
     closeSendPhoneProgress();

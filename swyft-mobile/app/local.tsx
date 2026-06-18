@@ -80,7 +80,19 @@ export default function LocalScreen() {
   // ── Init TransferManager ──────────────────────────────────────────────────
   useEffect(() => {
     const callbacks: TMCallbacks = {
-      onPeersChanged: (p) => setPeers(p),
+      // Merge instead of replace: DiscoveryService only ever knows about
+      // peers it heard over UDP multicast, so a plain replace here would
+      // wipe out any peer added via manual IP connect the moment the next
+      // discovery update comes in (which is why a manually-found phone used
+      // to disappear / lose its name shortly after being found).
+      onPeersChanged: (p) => {
+        setPeers(prev => {
+          const manualOnly = prev.filter(
+            (x: any) => x.manual && !p.some(y => y.fingerprint === x.fingerprint)
+          );
+          return [...p, ...manualOnly];
+        });
+      },
 
       onIncomingRequest: (req) => {
         setReqData(req);
@@ -251,7 +263,10 @@ export default function LocalScreen() {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const info  = await res.json();
 
-      // Build a peer object matching SwyftPeer shape and inject into peer list
+      // Build a peer object matching SwyftPeer shape and inject into peer list.
+      // manual:true marks this so onPeersChanged (below) never lets a UDP
+      // discovery update silently wipe it back out — discovery only ever
+      // knows about peers it heard over multicast, never ones typed in here.
       const peer = {
         alias:       info.alias       || ip,
         version:     info.version     || '2.0',
@@ -264,6 +279,7 @@ export default function LocalScreen() {
         ip,
         lastSeen:    Date.now(),
         baseUrl:     `http://${ip}:53317`,
+        manual:      true,
       };
 
       // Merge into peers list without duplicates

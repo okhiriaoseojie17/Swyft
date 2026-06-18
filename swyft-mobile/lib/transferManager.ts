@@ -42,6 +42,9 @@ export class TransferManager {
   private activePeer:   SwyftPeer | null = null;
   private activeSession: string | null   = null;
   private sendStart     = 0;
+  // Lets cancelTransfer() stop an in-flight send even before the real
+  // sessionId comes back from /prepare-upload (see sendFiles/cancelTransfer).
+  private cancelFlag: { cancelled: boolean } = { cancelled: false };
 
   constructor(cb: TMCallbacks) {
     this.cb        = cb;
@@ -119,6 +122,7 @@ export class TransferManager {
     // Generate a client-side sessionId so we can cancel before /prepare-upload returns.
     // The real sessionId comes back from /prepare-upload — we overwrite it then.
     this.activeSession = '__pending__';
+    this.cancelFlag     = { cancelled: false };  // fresh flag for this send
 
     const totalSize = files.reduce((s, f) => s + f.size, 0);
     let   sentTotal = 0;
@@ -129,6 +133,13 @@ export class TransferManager {
       {
         onSessionId: (sid) => {
           this.activeSession = sid;  // now cancelTransfer() can POST /cancel for real
+          // If Cancel was already tapped while we were still waiting on
+          // /prepare-upload (activeSession was '__pending__'), it never
+          // reached the peer because we had no real id yet. Cancel it now
+          // so their session is invalidated even if they tap Accept after this.
+          if (this.cancelFlag.cancelled) {
+            this.client?.cancelSession(peer, sid);
+          }
         },
         onProgress: (_fileId, sent, total) => {
           sentTotal = sent;   // single-file simple tracking
@@ -144,6 +155,7 @@ export class TransferManager {
           this.cb.onTransferError(msg);
         },
       },
+      this.cancelFlag,
     );
 
     dismissTransferNotification();
@@ -167,6 +179,15 @@ export class TransferManager {
   // ── Cancel active outbound transfer ──────────────────────────────────────
 
   async cancelTransfer(): Promise<void> {
+    // Stop our own polling/upload loop right away, even if the real
+    // sessionId hasn't come back yet. Previously this whole method did
+    // nothing when activeSession was still '__pending__', which is why
+    // Cancel appeared to do nothing if tapped right after starting a send —
+    // the local polling/upload loop kept running, and if the real sessionId
+    // arrived afterward it silently revived activeSession with no idea a
+    // cancel had already been requested.
+    this.cancelFlag.cancelled = true;
+
     // Cancel outbound (we are the sender)
     if (this.activePeer && this.activeSession && this.activeSession !== '__pending__') {
       await this.client?.cancelSession(this.activePeer, this.activeSession);
