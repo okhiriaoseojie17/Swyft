@@ -100,6 +100,37 @@ export default function LocalScreen() {
       },
 
       onTransferProgress: (pct, speed, sent, total) => {
+        // When the last chunk arrives, sent === total. At that point the server
+        // fires _assembleFile() in the background — all disk I/O for re-combining
+        // the temp chunk files into the final file happens AFTER this callback.
+        // That work is proportional to file size (48 sequential reads + writes for
+        // a 23 MB file) and is what causes the "stall at 23.3/23.3" symptom.
+        //
+        // Detection: fakeProgRef is only non-null on the RECEIVING side, so
+        // "sent >= total AND fakeProgRef is set" unambiguously means "we just
+        // received the final chunk; assembly is now running in the background".
+        //
+        // UX fix: stop the fake animation, lock the bar at 99%, and run an
+        // animated "Finalizing transfer…" message so users see activity rather
+        // than a frozen screen. The same fakeProgRef is reused to store this
+        // new interval — all existing cleanup paths (onTransferComplete,
+        // onTransferError, onRemoteCancel, cancel button) already clear it.
+        if (sent > 0 && total > 0 && sent >= total && fakeProgRef.current !== null) {
+          clearInterval(fakeProgRef.current);
+          setProgPct(99);
+          let dotPhase = 0;
+          const DOT_LABELS = [
+            'Finalizing transfer.',
+            'Finalizing transfer..',
+            'Finalizing transfer...',
+          ] as const;
+          fakeProgRef.current = setInterval(() => {
+            dotPhase = (dotPhase + 1) % DOT_LABELS.length;
+            setProgStats(DOT_LABELS[dotPhase]);
+          }, 450);
+          setProgStats(DOT_LABELS[0]);
+          return;   // Don't overwrite progPct / progStats below
+        }
         setProgPct(pct);
         setProgStats(
           speed > 0

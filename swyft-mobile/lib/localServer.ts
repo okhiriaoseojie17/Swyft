@@ -305,7 +305,17 @@ export class LocalServer {
         const fileInfo = session.req.files.find(f => f.id === fileId);
         if (!fileInfo) return json(400, { message: 'Unknown file' });
 
-        const safeName  = fileInfo.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
+        // BUGFIX: previous regex allowed a literal space through (the trailing
+        // ` ` before `]`), so original filenames with spaces (e.g. "Swyft
+        // Setup 1.0.0.exe", "students handbook.pdf") passed into `dest` below
+        // unchanged. expo-file-system/next's File constructor (used in
+        // _assembleFile) parses `dest` as a strict file:// URI and rejects raw
+        // spaces with "Illegal character in path" — AFTER the final chunk's
+        // HTTP 200 had already gone back to the sender, which is why desktop
+        // showed "Sent!" while the phone silently failed to assemble the file.
+        // Removing the space from the allowed set fixes it the same way every
+        // other unsafe character (#, %, &, etc.) was already being handled.
+        const safeName  = fileInfo.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
         const chunkPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${chunkIndex}`;
 
         // Write this chunk to its own temp file.
@@ -346,7 +356,10 @@ export class LocalServer {
         }
 
         this._assembleFile(sessionId, fileId, safeName, totalChunks, session)
-          .catch((err: any) => this.cb.onError('Assembly error: ' + err.message));
+          .catch((err: any) => {
+            console.error('[LocalServer] assembly failed:', err);
+            this.cb.onError('Assembly error: ' + (err?.message || String(err)));
+          });
 
         return json(200, { message: 'chunk received', chunkIndex });
       } catch (err: any) {
@@ -442,6 +455,21 @@ export class LocalServer {
    * writeBytes() was changed to return a Promise. The `await`-if-thenable
    * check below handles that automatically if you upgrade later — but it's
    * worth re-verifying against your then-current package if you do.
+   *
+   * BUGFIX (this version): writeBytes() was receiving a `Buffer` (from the
+   * 'buffer' npm polyfill) instead of a plain `Uint8Array`. writeBytes() is
+   * a JSI host function with a strict native-side type check, and a Buffer
+   * — despite being a Uint8Array subclass — isn't what the native side
+   * expects. This made the native (Kotlin) code throw with no usable
+   * message, which JSI surfaced to JS as "Exception in Host Function:
+   * <unknown>" — thrown from inside this method, AFTER the final chunk's
+   * HTTP 200 had already gone back to the desktop. Same "Sent!" on
+   * desktop / nothing on phone symptom as the appendAsStringAsync bug above,
+   * different cause. FIX: copy each chunk into a real Uint8Array before
+   * calling writeBytes(). create()/open()/writeBytes() are also now each
+   * wrapped individually so that if a *different* native error ever occurs,
+   * the message will say exactly which call failed instead of a single
+   * generic "Assembly error".
    */
   private async _assembleFile(
     sessionId: string,
@@ -453,33 +481,86 @@ export class LocalServer {
     const dest = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
 
     const fileObj = new NextFile(dest);
-    if (fileObj.exists) fileObj.delete();
-    fileObj.create();
+    try {
+      if (fileObj.exists) fileObj.delete();
+      fileObj.create();
+    } catch (createErr: any) {
+      throw new Error('File create() failed: ' + (createErr?.message || String(createErr)));
+    }
 
-    const fh = fileObj.open();
+    let fh: any;
+    try {
+      fh = fileObj.open();
+    } catch (openErr: any) {
+      throw new Error('FileHandle open() failed: ' + (openErr?.message || String(openErr)));
+    }
+
+    // Helper: read one chunk file from disk and decode it to a plain Uint8Array.
+    // Extracting this lets us kick off the NEXT read before the current write
+    // has finished, overlapping native-thread I/O with the JS-side write.
+    const readChunk = async (i: number): Promise<Uint8Array> => {
+      const p = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+      const b64 = await FileSystem.readAsStringAsync(p, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      // Must copy Buffer → plain Uint8Array before crossing the JSI boundary.
+      // Buffer (from the 'buffer' polyfill) is a Uint8Array subclass but its
+      // extra prototype state makes writeBytes() throw "Exception in Host
+      // Function: <unknown>" on the native side. See the fix note above.
+      const raw = Buffer.from(b64, 'base64');
+      const bytes = new Uint8Array(raw.length);
+      bytes.set(raw);
+      return bytes;
+    };
+
+    // PIPELINE: prime the pipeline by starting the first read before the loop.
+    // Each iteration then starts the NEXT read before awaiting the current write,
+    // so native-thread disk I/O overlaps the JS-side writeBytes() call.
+    // Deletes are fire-and-forget — they don't block assembly and still free
+    // disk space promptly on the native thread.
+    let nextBytesPromise: Promise<Uint8Array> = readChunk(0);
+
     let writePos = 0;
     try {
       for (let i = 0; i < totalChunks; i++) {
-        const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+        // Await the chunk that was being read in parallel with the previous write.
+        const bytes = await nextBytesPromise;
 
-        // Re-read chunk temp file as base64 text, then decode to raw bytes.
-        const partBase64 = await FileSystem.readAsStringAsync(partPath, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        const bytes = Buffer.from(partBase64, 'base64');
-
-        fh.offset = writePos;
-        const maybePromise: any = fh.writeBytes(bytes);
-        if (maybePromise && typeof maybePromise.then === 'function') {
-          await maybePromise;   // future-SDK safety net — see note above
+        // Kick off reading the NEXT chunk NOW — this runs on the native I/O
+        // thread in parallel with the writeBytes() call below.
+        if (i + 1 < totalChunks) {
+          nextBytesPromise = readChunk(i + 1);
         }
-        writePos += bytes.length;
 
-        // Delete the temp chunk immediately — frees disk space as we go.
-        await FileSystem.deleteAsync(partPath, { idempotent: true });
+        // Skip zero-length chunks — some native writeBytes() implementations
+        // throw on a zero-byte write. (Can happen if file size is an exact
+        // multiple of the chunk size.)
+        if (bytes.length > 0) {
+          fh.offset = writePos;
+          try {
+            const maybePromise: any = fh.writeBytes(bytes);
+            if (maybePromise && typeof maybePromise.then === 'function') {
+              await maybePromise;   // future-SDK safety net — see note above
+            }
+          } catch (writeErr: any) {
+            throw new Error(
+              `writeBytes failed at chunk ${i}/${totalChunks} ` +
+              `(offset ${writePos}, ${bytes.length} bytes): ` +
+              (writeErr?.message || String(writeErr))
+            );
+          }
+          writePos += bytes.length;
+        }
+
+        // Delete the temp chunk — fire-and-forget so the loop doesn't stall
+        // waiting for the delete before it can await the next read.
+        const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+        FileSystem.deleteAsync(partPath, { idempotent: true }).catch(() => {});
       }
     } finally {
-      fh.close();
+      try { fh.close(); } catch (closeErr: any) {
+        console.warn('[LocalServer] fh.close() failed (non-fatal):', closeErr?.message);
+      }
     }
 
     console.log('[LocalServer] file assembled and saved (streaming):', dest);
