@@ -17,7 +17,17 @@ export const SWYFT_PORT          = 53317;          // ONE port, everywhere
 export const MULTICAST_ADDR      = '224.0.0.167';  // LocalSend multicast group
 export const MULTICAST_PORT      = SWYFT_PORT;
 export const ANNOUNCE_INTERVAL_MS = 2000;
-export const PEER_EXPIRY_MS       = 8000;          // generous — multicast can delay
+// STICKINESS FIX: was 8000ms — only 4 missed broadcasts (out of
+// ANNOUNCE_INTERVAL_MS) before a still-connected peer silently vanished from
+// the list. Multicast on Android/iOS routinely misses several beats in a row
+// (screen-off throttling, WiFi power save, brief congestion), so peers
+// flickered in and out every few seconds even while still on the network.
+// 90s makes a peer "stick" once discovered — short dropouts no longer remove
+// it — while still eventually clearing a peer that has genuinely left
+// (closed the app / left the network), rather than keeping dead entries
+// forever. Mirrored manually in desktop/local-server.js's PEER_EXPIRY, since
+// that file is plain JS and doesn't import this module directly.
+export const PEER_EXPIRY_MS       = 90000;
 export const PROTOCOL_VERSION     = '2.0';         // Swyft unified protocol version
 export const CONNECT_TIMEOUT_MS   = 10000;
 

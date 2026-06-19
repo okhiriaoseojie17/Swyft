@@ -37,7 +37,11 @@ const SIGNAL_PORT        = 3001;           // socket.io online signalling only
 const MULTICAST_ADDR     = '224.0.0.167';
 const MULTICAST_PORT     = SWYFT_PORT;
 const ANNOUNCE_INTERVAL  = 2000;
-const PEER_EXPIRY        = 8000;
+// STICKINESS FIX: was 8000ms (only 4 missed broadcasts before a still-connected
+// peer vanished from the list, causing visible flicker). 90s makes a device
+// stick once discovered while still clearing peers that genuinely leave.
+// Mirrors the same override applied in discovery.ts on mobile.
+const PEER_EXPIRY        = 90000;
 const PROTOCOL_VERSION   = '2.0';
 
 // ─── Two Express apps: one for local HTTP (53317), one for online socket.io (3001) ──

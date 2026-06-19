@@ -262,13 +262,21 @@ export default function LocalScreen() {
       clearTimeout(timer);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const info  = await res.json();
+      // DIAGNOSTIC: if a desktop's name still doesn't show after this fix,
+      // check this log — it tells you whether that device's /info response
+      // is missing alias/fingerprint (server-side issue on that device).
+      console.log('[connectManualIP] /info response from', ip, ':', info);
 
       // Build a peer object matching SwyftPeer shape and inject into peer list.
       // manual:true marks this so onPeersChanged (below) never lets a UDP
       // discovery update silently wipe it back out — discovery only ever
       // knows about peers it heard over multicast, never ones typed in here.
+      // FIX: previously fell back to `ip` when info.alias was missing, which
+      // made the card show the IP twice (once as the name, once in the
+      // deviceType · ip subtitle below). Falling back to a clearly different
+      // label avoids that visual duplication.
       const peer = {
-        alias:       info.alias       || ip,
+        alias:       info.alias       || 'Unnamed device',
         version:     info.version     || '2.0',
         deviceModel: info.deviceModel || 'Unknown',
         deviceType:  info.deviceType  || 'desktop',

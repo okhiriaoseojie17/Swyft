@@ -527,6 +527,30 @@
     return (t === 'desktop' || t === 'windows' || t === 'mac' || t === 'linux') ? '💻' : '📱';
   }
 
+  // ── Fast base64 chunk encoder ────────────────────────────────────────────
+  // SPEED FIX: the previous encoder did
+  //   for (i=0; i<len; i+=8192) binary += String.fromCharCode(...slice)
+  //   btoa(binary)
+  // — a pure-JS byte-by-byte loop with spread-call overhead on every 8 KB
+  // step. FileReader.readAsDataURL() hands the same bytes to the browser's
+  // native (C++) base64 encoder in one call, which is dramatically faster,
+  // especially noticeable on multi-hundred-KB chunks. Output is byte-for-byte
+  // identical base64 — this is purely a faster way to produce the same string,
+  // so it doesn't change chunk size, padding behaviour, or the wire protocol
+  // at all.
+  function readSliceAsBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => {
+        const result = reader.result;            // "data:<mime>;base64,<data>"
+        const comma   = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
   // Merge an incoming peer list into nearbyPeers without clobbering existing data.
   // Uses spread so a more-complete entry (e.g. one that has alias) always wins.
   function mergePeers(list) {
@@ -724,10 +748,21 @@
 
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const info = await res.json();
+      // DIAGNOSTIC: if a device's name still doesn't show up after this fix,
+      // check this log — it tells you whether the device's /info response
+      // itself is missing alias/fingerprint (a server-side issue on that
+      // device) versus the desktop-side rendering (now fixed above).
+      console.log('[connectManualIP] /info response from', ip, ':', info);
 
-      // Build a peer object matching the discovery peer shape
+      // Build a peer object matching the discovery peer shape.
+      // FIX: previously fell back to `ip` when info.alias was missing, which
+      // made the peer card show the IP address twice — once as the name
+      // (peer-name row) and once in the subtitle (peer-sub row, which always
+      // shows the IP). Falling back to a clearly-different label means the
+      // card never visually duplicates the IP even on devices that didn't
+      // return a usable name.
       const peer = {
-        alias:       info.alias       || ip,
+        alias:       info.alias || 'Unnamed device',
         version:     info.version     || '2.0',
         deviceModel: info.deviceModel || 'Unknown',
         deviceType:  info.deviceType  || 'desktop',
@@ -996,7 +1031,6 @@
       const CHUNK_BYTES  = 384 * 1024;   // 393 216 — must remain divisible by 3
       const total        = selectedFile.size;
       const totalChunks  = Math.ceil(total / CHUNK_BYTES) || 1;
-      const ENCODE_STEP  = 8192;   // btoa step size to avoid spread-operator stack overflow
 
       document.getElementById('progStats').textContent = 'Uploading…';
 
@@ -1006,17 +1040,9 @@
         const start = chunkIndex * CHUNK_BYTES;
         const end   = Math.min(start + CHUNK_BYTES, total);
 
-        // Lazy slice — no memory allocated until arrayBuffer() is called below.
-        const sliceBlob = selectedFile.slice(start, end);
-        const sliceBuf  = await sliceBlob.arrayBuffer();  // reads only this chunk
-        const uint8     = new Uint8Array(sliceBuf);
-
-        // Encode this slice to base64 in ENCODE_STEP-byte steps.
-        let binary = '';
-        for (let i = 0; i < uint8.length; i += ENCODE_STEP) {
-          binary += String.fromCharCode(...uint8.subarray(i, i + ENCODE_STEP));
-        }
-        const base64Chunk = btoa(binary);
+        // Lazy slice — no memory allocated until read below.
+        const sliceBlob   = selectedFile.slice(start, end);
+        const base64Chunk = await readSliceAsBase64(sliceBlob);   // native encoder — fast
 
         const uploadRes = await fetch(
           `${peerBaseUrl}/upload`,
@@ -1250,7 +1276,6 @@
     const CHUNK_BYTES  = 384 * 1024;   // 393 216 — divisible by 3 (see sendToPeer comment)
     const total        = selectedFile.size;
     const totalChunks  = Math.ceil(total / CHUNK_BYTES) || 1;
-    const ENCODE_STEP  = 8192;
 
     try {
       // 1. POST /prepare-upload directly to the phone.
@@ -1320,13 +1345,8 @@
 
         const start     = chunkIndex * CHUNK_BYTES;
         const end       = Math.min(start + CHUNK_BYTES, total);
-        const sliceBuf  = await selectedFile.slice(start, end).arrayBuffer();
-        const uint8     = new Uint8Array(sliceBuf);
-
-        let binary = '';
-        for (let i = 0; i < uint8.length; i += ENCODE_STEP)
-          binary += String.fromCharCode(...uint8.subarray(i, i + ENCODE_STEP));
-        const b64 = btoa(binary);
+        const sliceBlob = selectedFile.slice(start, end);
+        const b64       = await readSliceAsBase64(sliceBlob);   // native encoder — fast
 
         const upRes = await fetch(`${peerBaseUrl}/upload`, {
           method:  'POST',

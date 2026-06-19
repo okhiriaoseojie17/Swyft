@@ -44,6 +44,8 @@ import {
   RequestEvent, Response as HttpResponse,
 } from 'expo-http-server';
 import * as FileSystem from 'expo-file-system';
+import { File as NextFile } from 'expo-file-system/next';
+import { Buffer } from 'buffer';
 import { Platform } from 'react-native';
 import {
   SWYFT_PORT,
@@ -411,6 +413,35 @@ export class LocalServer {
    * this, a slow reassembly (more chunks = more sequential disk round-trips)
    * could tie up the only server thread long enough that the NEXT transfer
    * attempt's /prepare-upload never even gets picked up.
+   *
+   * BUGFIX (this version): the previous implementation called
+   * `FileSystem.appendAsStringAsync()`, which does not exist anywhere in
+   * expo-file-system — not in the legacy API, not in expo-file-system/next.
+   * That call always threw "undefined is not a function" on the final
+   * chunk — AFTER the HTTP 200 for that chunk had already been sent back to
+   * the sender, which is exactly why the desktop showed "Sent!" while the
+   * file was never actually written on the phone.
+   *
+   * FIX: true streaming assembly via expo-file-system/next's FileHandle,
+   * which writes raw bytes directly to disk at an explicit offset. Peak
+   * memory is one decoded chunk (~384 KB) at a time, constant regardless of
+   * total file size — no OOM risk even on multi-GB files.
+   *
+   * Verified directly against your installed package
+   * (expo-file-system@18.0.12, Expo SDK 52.0.49) by pulling its actual
+   * .d.ts, not just the docs site (whose v52 page omits the FileHandle
+   * section, which is why it looked unsupported at first glance — it isn't):
+   *   class FileHandle {
+   *     close(): void;
+   *     readBytes(length: number): Uint8Array;
+   *     writeBytes(bytes: Uint8Array): void;   // synchronous in this version
+   *     offset: number | null;
+   *     size: number | null;
+   *   }
+   * NOTE: in newer Expo SDKs (53+ per the expo-file-system changelog),
+   * writeBytes() was changed to return a Promise. The `await`-if-thenable
+   * check below handles that automatically if you upgrade later — but it's
+   * worth re-verifying against your then-current package if you do.
    */
   private async _assembleFile(
     sessionId: string,
@@ -421,52 +452,37 @@ export class LocalServer {
   ): Promise<void> {
     const dest = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
 
-    // ── Streaming assembly — one chunk in memory at a time ────────────────────
-    //
-    // OLD approach: accumulated ALL chunk base64 strings into one giant `assembled`
-    // variable, then wrote it. For a 1 GB file that's ~1.33 GB of JS strings in
-    // the heap → OOM crash, exactly like the readAsStringAsync-full-file bug in
-    // localClient.ts.
-    //
-    // NEW approach: write chunk 0 as the destination file, then append each
-    // subsequent chunk's decoded bytes directly. Peak memory is one chunk's base64
-    // string (~512 KB for a 384 KB raw chunk), regardless of total file size.
-    //
-    // CRITICAL PRECONDITION: every chunk except the last must be exactly
-    // CHUNK_BYTES raw bytes, where CHUNK_BYTES is divisible by 3. This ensures
-    // the base64 re-encoding of each temp-file has NO trailing '=' padding.
-    // appendAsStringAsync decodes each base64 segment and appends the raw bytes;
-    // if an intermediate segment ends with '=', Android's decoder treats it as
-    // end-of-stream and drops every byte that follows, corrupting the file.
-    // Both senders (localClient.ts and local.html) now use CHUNK_BYTES = 384 * 1024
-    // = 393 216 = 131 072 × 3, satisfying this requirement.
-    for (let i = 0; i < totalChunks; i++) {
-      const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
+    const fileObj = new NextFile(dest);
+    if (fileObj.exists) fileObj.delete();
+    fileObj.create();
 
-      // Re-read chunk temp file as base64. Since CHUNK_BYTES % 3 === 0 for all
-      // but the last chunk, this produces a clean base64 string (no '=' padding).
-      const partBase64 = await FileSystem.readAsStringAsync(partPath, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+    const fh = fileObj.open();
+    let writePos = 0;
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
 
-      if (i === 0) {
-        // Create the destination file with chunk 0's decoded bytes.
-        await FileSystem.writeAsStringAsync(dest, partBase64, {
+        // Re-read chunk temp file as base64 text, then decode to raw bytes.
+        const partBase64 = await FileSystem.readAsStringAsync(partPath, {
           encoding: FileSystem.EncodingType.Base64,
         });
-      } else {
-        // Decode partBase64 and append the raw bytes to the destination file.
-        // appendAsStringAsync is available in expo-file-system ≥ 16 (Expo SDK ≥ 51).
-        await (FileSystem as any).appendAsStringAsync(dest, partBase64, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        const bytes = Buffer.from(partBase64, 'base64');
+
+        fh.offset = writePos;
+        const maybePromise: any = fh.writeBytes(bytes);
+        if (maybePromise && typeof maybePromise.then === 'function') {
+          await maybePromise;   // future-SDK safety net — see note above
+        }
+        writePos += bytes.length;
+
+        // Delete the temp chunk immediately — frees disk space as we go.
+        await FileSystem.deleteAsync(partPath, { idempotent: true });
       }
-
-      // Delete the temp chunk immediately — frees disk space as we go.
-      await FileSystem.deleteAsync(partPath, { idempotent: true });
+    } finally {
+      fh.close();
     }
 
-    console.log('[LocalServer] file assembled and saved:', dest);
+    console.log('[LocalServer] file assembled and saved (streaming):', dest);
 
     session.tokens.delete(fileId);
     session.chunksReceived.delete(fileId);

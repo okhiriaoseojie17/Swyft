@@ -33,6 +33,10 @@ import {
 export { SwyftPeer };
 export type PeerListCallback = (peers: SwyftPeer[]) => void;
 
+// Stickiness fix: PEER_EXPIRY_MS now lives in shared/protocol.ts (bumped to
+// 90s there — see that file for the full explanation). Using it directly
+// here, no local override needed.
+
 // ─── Stable identity helpers ──────────────────────────────────────────────────
 
 async function getFingerprint(): Promise<string> {
