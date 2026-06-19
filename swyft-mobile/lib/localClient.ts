@@ -26,9 +26,19 @@ import {
   PROTOCOL_VERSION,
 } from './protocol';
 
-// 512 KB raw per chunk → ~700 KB base64 per HTTP request body.
-// Well within expo-http-server's safe buffer limit on Android.
-const CHUNK_BYTES = 512 * 1024;
+// 384 KB raw per chunk → exactly 512 KB base64 per HTTP request body.
+//
+// TWO reasons this value matters:
+//   1. Divisible by 3: 384 * 1024 = 393 216 = 131 072 × 3. When a positional
+//      read of exactly 393 216 bytes is base64-encoded independently, the result
+//      is 524 288 chars with NO trailing '=' padding. The receiver concatenates
+//      per-chunk base64 strings to rebuild the file; any intermediate '='
+//      causes Android's base64 decoder to stop there and silently truncate the
+//      file. Only the final (possibly shorter) chunk may legitimately end with '='.
+//   2. Body size: 512 KB base64 per POST stays well within expo-http-server's
+//      safe buffer limit on Android (previous 512 KB raw → 683 KB base64 was
+//      borderline; 384 KB raw → 512 KB base64 is comfortably under it).
+const CHUNK_BYTES = 384 * 1024;   // 393 216 — must remain divisible by 3
 
 export interface SendCallbacks {
   onProgress:  (fileId: string, sent: number, total: number) => void;
@@ -168,20 +178,30 @@ export class LocalClient {
   }
 
   /**
-   * Uploads a file in 512 KB base64 chunks.
+   * Uploads a file to a peer in 384 KB base64 chunks using positional reads.
    *
-   * Why chunking? expo-http-server (and the React Native JS bridge) buffers the
-   * entire request body before surfacing it. A single large body can exceed the
-   * bridge's internal limit and causes the server to reply with HTTP 413 (body
-   * too large) or silently drop the connection, producing the "Chunk 1/N failed:
-   * HTTP 413" error seen with ZIP files and large attachments.
+   * ── Why positional reads? ────────────────────────────────────────────────────
+   * The old code called readAsStringAsync(file.uri, {encoding:'base64'}) once,
+   * loading the ENTIRE file into the JS heap as a base64 string before splitting.
+   * A 124 MB file requires a ~167 MB string allocation → OOM on Android
+   * (java.lang.OutOfMemoryError: Failed to allocate N bytes).
    *
-   * Sending 512 KB slices keeps each individual POST body under ~700 KB base64,
-   * which is well within the safe limit. The mobile server (localServer.ts) writes
-   * each chunk to a temp file and reassembles them when the final chunk arrives.
+   * readAsStringAsync supports optional { position, length } options that read
+   * only a byte range from disk. Peak memory per iteration is one 512 KB base64
+   * string (~384 KB raw), independent of total file size. This lets files of
+   * any size — 5 GB, 50 GB — transfer without OOM.
    *
-   * onProgress fires after every chunk so the progress bar advances in real-time
-   * instead of jumping from 0% to 100% at the end.
+   * ── Why CHUNK_BYTES must be divisible by 3 ──────────────────────────────────
+   * When a slice of N raw bytes is encoded to base64 independently, the result
+   * has trailing '=' padding if N % 3 ≠ 0. The receiver concatenates each
+   * chunk's re-encoded base64 to rebuild the file; any '=' in the MIDDLE of
+   * that string causes Android's decoder to stop there and silently drop every
+   * byte after it, corrupting the file. CHUNK_BYTES = 384 * 1024 = 393 216 = 131
+   * 072 × 3, so every chunk except the last encodes with zero padding.
+   *
+   * ── Why 384 KB not 512 KB? ───────────────────────────────────────────────────
+   * 384 KB raw → 512 KB base64. 512 KB raw → 683 KB base64, which is over
+   * expo-http-server's safe body limit on some Android devices (causes HTTP 413).
    */
   private async _uploadFileInChunks(
     baseUrl:   string,
@@ -195,21 +215,22 @@ export class LocalClient {
     try {
       cb.onProgress(fileId, 0, file.size);
 
-      // Read the full file as base64 once — FileSystem.readAsStringAsync is the
-      // only reliable way to get file contents in Expo (no streaming read API).
-      const fullBase64 = await FileSystem.readAsStringAsync(file.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      // Split into 512 KB (raw) slices.
-      // Each raw byte becomes 4/3 base64 chars, so the base64 chunk size is:
-      //   ceil(512 * 1024 * 4 / 3) = 699 051 characters ≈ 683 KB per POST body.
-      const b64ChunkSize = Math.ceil(CHUNK_BYTES * 4 / 3);
-      const totalChunks  = Math.ceil(fullBase64.length / b64ChunkSize) || 1;
+      // Calculate total chunks from raw file size (not base64 length).
+      const totalChunks = Math.ceil(file.size / CHUNK_BYTES) || 1;
 
       for (let i = 0; i < totalChunks; i++) {
         if (cancelFlag?.cancelled) throw new Error('Cancelled by user');
-        const chunk = fullBase64.slice(i * b64ChunkSize, (i + 1) * b64ChunkSize);
+
+        const position = i * CHUNK_BYTES;
+        const length   = Math.min(CHUNK_BYTES, file.size - position);
+
+        // Read ONLY this slice from disk — never the whole file at once.
+        // { position, length } is a byte range; the result is base64-encoded.
+        const chunk = await FileSystem.readAsStringAsync(file.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+          position,
+          length,
+        });
 
         const res = await fetch(
           `${baseUrl}/upload?sessionId=${encodeURIComponent(sessionId)}&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`,
@@ -230,13 +251,10 @@ export class LocalClient {
           throw new Error(`Chunk ${i + 1}/${totalChunks} failed: HTTP ${res.status} ${text}`);
         }
 
-        // Report real progress based on chunks delivered so far.
-        // Use min() to never exceed file.size due to base64 overhead.
         const bytesSent = Math.min((i + 1) * CHUNK_BYTES, file.size);
         cb.onProgress(fileId, bytesSent, file.size);
       }
 
-      // Final progress snap to 100%
       cb.onProgress(fileId, file.size, file.size);
       cb.onComplete(fileId);
     } catch (err: any) {

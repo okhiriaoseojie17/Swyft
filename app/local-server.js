@@ -283,39 +283,55 @@ localApp.post('/upload', express.text({ type: '*/*', limit: '2gb' }), async (req
     const totalChunks = parseInt(req.headers['x-total-chunks'] ?? req.query.totalChunks ?? '1', 10);
 
     if (totalChunks > 1) {
-      // Multi-chunk path: accumulate in memory, write on final chunk.
-      // Using a per-session, per-file chunk map keyed by chunk index.
-      if (!session.chunks)          session.chunks = {};
-      if (!session.chunks[fileId])  session.chunks[fileId] = {};
-      session.chunks[fileId][chunkIndex] = req.body;  // store base64 slice
+      // ── Streaming chunk path ─────────────────────────────────────────────────
+      // OLD: stored every chunk's base64 string in session.chunks[fileId][i].
+      // For a 1 GB file that's ~1.33 GB of JS strings held in RAM until the
+      // final chunk arrives — OOM for large files.
+      //
+      // NEW: write each chunk's base64 string to a temp file on disk immediately,
+      // then stream-decode them on the final chunk. Peak RAM is one chunk's base64
+      // string (~512 KB) at any time, regardless of total file size.
+      if (!session.chunkPaths)          session.chunkPaths = {};
+      if (!session.chunkPaths[fileId])  session.chunkPaths[fileId] = {};
 
-      console.log(`[upload] chunk ${chunkIndex + 1}/${totalChunks} received for ${safeName}`);
+      const chunkPath = path.join(TMP, `swyft_${sessionId}_${fileId}_c${chunkIndex}`);
+      fs.writeFileSync(chunkPath, req.body, 'utf8');   // base64 text, not binary
+      session.chunkPaths[fileId][chunkIndex] = chunkPath;
 
-      // Emit approximate progress to the UI
+      console.log(`[upload] chunk ${chunkIndex + 1}/${totalChunks} written to disk for ${safeName}`);
+
       const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
       io.emit('upload-progress-local', { sessionId, fileId, pct });
 
       if (chunkIndex < totalChunks - 1) {
-        // Not the final chunk yet — acknowledge and wait for the next one
         return res.json({ message: 'chunk received', chunkIndex });
       }
 
-      // ── Final chunk: reassemble all parts in order ─────────────────────────
-      let fullBase64 = '';
-      for (let i = 0; i < totalChunks; i++) {
-        const part = session.chunks[fileId][i];
-        if (part === undefined) {
-          return res.status(400).json({ message: `Missing chunk ${i}` });
+      // ── Final chunk: stream-assemble from temp files ─────────────────────────
+      const dest        = path.join(os.homedir(), 'Downloads', safeName);
+      const writeStream = fs.createWriteStream(dest);
+
+      for (let k = 0; k < totalChunks; k++) {
+        const p = session.chunkPaths[fileId][k];
+        if (!p || !fs.existsSync(p)) {
+          writeStream.destroy();
+          return res.status(400).json({ message: `Missing chunk file ${k}` });
         }
-        fullBase64 += part;
+        // Read base64 text, decode to binary, write to stream — one chunk in RAM
+        const b64 = fs.readFileSync(p, 'utf8');
+        writeStream.write(Buffer.from(b64, 'base64'));
+        fs.unlinkSync(p);   // free disk space immediately
       }
-      delete session.chunks[fileId];
 
-      const dest       = path.join(os.homedir(), 'Downloads', safeName);
-      const fileBuffer = Buffer.from(fullBase64, 'base64');
-      fs.writeFileSync(dest, fileBuffer);
+      await new Promise((resolve, reject) => {
+        writeStream.end();
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+      });
 
-      console.log('[upload] chunked file saved to:', dest, '— size:', fileBuffer.length, 'bytes');
+      delete session.chunkPaths[fileId];
+
+      console.log('[upload] chunked file saved to:', dest, '— size:', fs.statSync(dest).size, 'bytes');
       io.emit('transfer-complete-local', { sessionId, fileId, fileName: safeName, dest });
 
       delete session.tokens[fileId];
@@ -509,12 +525,18 @@ localApp.post('/send-to-phone', express.json({ limit: '2gb' }), async (req, res)
         return;
       }
 
-      // 3. Upload in 64 KB chunks.
-      // expo-http-server on Android has a much lower body-size limit than Node/Express.
-      // 512 KB chunks (the mobile→desktop size) cause HTTP 413 on the phone.
-      // 64 KB raw → ~85 KB base64 per POST stays well within expo-http-server's limit.
-      const CHUNK_BYTES   = 64 * 1024;
-      const b64ChunkSize  = Math.ceil(CHUNK_BYTES * 4 / 3);
+      // 3. Upload in 63 KB raw chunks → exactly 84 KB base64 per POST.
+      //
+      // CHUNK_BYTES = 63 * 1024 = 64 512, which is exactly divisible by 3.
+      // That makes b64ChunkSize = 64 512 / 3 * 4 = 86 016, divisible by 4.
+      // Slicing the full-file base64 at 4-aligned positions means every chunk
+      // is a syntactically complete base64 string (no orphaned groups at chunk
+      // boundaries). The old 64 * 1024 → b64ChunkSize = 87 382 (not ÷4) split
+      // base64 groups across chunks, corrupting the data on the phone side.
+      //
+      // 84 KB base64 per POST stays well within expo-http-server's body limit.
+      const CHUNK_BYTES   = 63 * 1024;              // 64 512 — divisible by 3
+      const b64ChunkSize  = CHUNK_BYTES / 3 * 4;    // 86 016 — exactly divisible by 4
       const totalChunks   = Math.ceil(fileBase64.length / b64ChunkSize) || 1;
 
       for (let i = 0; i < totalChunks; i++) {

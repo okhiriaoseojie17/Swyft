@@ -971,34 +971,50 @@
     window._activeSendPeer    = peer;
     window._activeSendSession = sessionId;
 
-    // ── Send file in 512 KB chunks as base64 ─────────────────────
-    // expo-http-server buffers the entire request body before handing it to JS.
-    // A single large body causes the Android JS bridge to choke (~80% stall).
-    // Sending 512 KB slices keeps each individual request body under ~700 KB,
-    // which is well within the bridge's safe limit.
+    // ── Send file in 384 KB chunks as base64 ─────────────────────────────────
+    //
+    // CHUNK_BYTES = 384 * 1024 = 393 216 bytes — divisible by 3.
+    //
+    // Why divisible by 3?  Each call to btoa() on a slice of N bytes produces a
+    // base64 string with trailing '=' padding when N % 3 ≠ 0.  The phone's
+    // _assembleFile concatenates the re-encoded base64 strings from every chunk
+    // temp-file.  Any '=' in the MIDDLE of that concatenated string causes
+    // Android's base64 decoder to stop there and silently drop every subsequent
+    // byte, corrupting the file.  With N = 393 216 = 131 072 × 3, every chunk
+    // except the (possibly shorter) last one encodes without any padding → the
+    // assembled string is valid → the file is correct.  This is why transfers
+    // previously stalled "just before the end" for files over ~512 KB: the very
+    // first multi-chunk assembly produced a truncated output.
+    //
+    // Why File.slice() instead of arrayBuffer()?  arrayBuffer() loads the entire
+    // file into browser memory before we can read even one byte.  For a 5 GB file
+    // that means 5 GB in RAM just to start the transfer.  File.slice() creates a
+    // lazy Blob view (zero-copy, no allocation) and arrayBuffer() on that view
+    // reads only those bytes from the OS file cache.  Peak memory per iteration is
+    // one 393 KB slice → suitable for files of any size.
     try {
-      const CHUNK_BYTES = 512 * 1024;  // 512 KB raw → ~700 KB base64 per request
-      const total       = selectedFile.size;
+      const CHUNK_BYTES  = 384 * 1024;   // 393 216 — must remain divisible by 3
+      const total        = selectedFile.size;
+      const totalChunks  = Math.ceil(total / CHUNK_BYTES) || 1;
+      const ENCODE_STEP  = 8192;   // btoa step size to avoid spread-operator stack overflow
 
-      document.getElementById('progStats').textContent = 'Reading file…';
-      const arrayBuffer = await selectedFile.arrayBuffer();
-      if (isCancelled) return;
-
-      const uint8       = new Uint8Array(arrayBuffer);
-      const totalChunks = Math.ceil(uint8.length / CHUNK_BYTES) || 1;
+      document.getElementById('progStats').textContent = 'Uploading…';
 
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
         if (isCancelled) return;
 
         const start = chunkIndex * CHUNK_BYTES;
-        const end   = Math.min(start + CHUNK_BYTES, uint8.length);
-        const slice = uint8.subarray(start, end);
+        const end   = Math.min(start + CHUNK_BYTES, total);
 
-        // Encode this slice to base64 in small steps to avoid stack overflow
-        const ENCODE_STEP = 8192;
+        // Lazy slice — no memory allocated until arrayBuffer() is called below.
+        const sliceBlob = selectedFile.slice(start, end);
+        const sliceBuf  = await sliceBlob.arrayBuffer();  // reads only this chunk
+        const uint8     = new Uint8Array(sliceBuf);
+
+        // Encode this slice to base64 in ENCODE_STEP-byte steps.
         let binary = '';
-        for (let i = 0; i < slice.length; i += ENCODE_STEP) {
-          binary += String.fromCharCode(...slice.subarray(i, i + ENCODE_STEP));
+        for (let i = 0; i < uint8.length; i += ENCODE_STEP) {
+          binary += String.fromCharCode(...uint8.subarray(i, i + ENCODE_STEP));
         }
         const base64Chunk = btoa(binary);
 
@@ -1194,41 +1210,31 @@
   // ── Send file FROM laptop TO phone ────────────────────────────
   // The phone receives it exactly the same way it receives from another phone:
   // the phone's LocalServer (localServer.ts) handles /prepare-upload and /upload.
-  // The desktop backend (/send-to-phone) drives the HTTP flow so the browser
-  // doesn't have to deal with CORS or chunking logic directly.
+  // The desktop sends directly to the phone in chunks — same protocol as
+  // sendToPeer but using the sendPhone overlay UI instead of the regular one.
+  //
+  // Previous design: read entire file as base64 in the browser, POST it as a
+  // single giant JSON body to /send-to-phone on the local server, which then
+  // relayed it in small pieces.  Problems:
+  //   • Entire file lived in browser RAM (impossible for files > a few hundred MB).
+  //   • The relay server received a ~6.7 GB JSON body for a 5 GB file.
+  //   • Chunk alignment bug in /send-to-phone used CHUNK_BYTES=64*1024 (not ÷3).
+  //
+  // New design: File.slice() + direct fetch, same as sendToPeer.
 
   let sendToPhoneSession  = null;
-  let sendToPhoneClientId = null;   // exists from the start — lets Cancel work
-                                     // even before the backend's real sessionId
-                                     // comes back over socket.io
+  let sendToPhoneClientId = null;
+  let sendToPhonePeer     = null;   // for cancelSendToPhone() to reach the peer
 
   async function sendToPhone(peer) {
     if (!selectedFile) { showStatus('⚠️ Pick a file first', 'error'); return; }
     if (isTransferring) { showStatus('⚠️ Transfer already in progress', 'error'); return; }
 
     sendToPhoneClientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    sendToPhonePeer     = peer;
 
-    // Read file as base64 in the browser, then hand off to backend
-    showStatus(`Reading file for ${peer.alias}…`, 'info');
-
-    let fileBase64;
-    try {
-      const buf    = await selectedFile.arrayBuffer();
-      const uint8  = new Uint8Array(buf);
-      // Encode in 8 KB steps to avoid stack overflow on large files
-      let binary = '';
-      const STEP = 8192;
-      for (let i = 0; i < uint8.length; i += STEP) {
-        binary += String.fromCharCode(...uint8.subarray(i, i + STEP));
-      }
-      fileBase64 = btoa(binary);
-    } catch (err) {
-      showStatus('❌ Could not read file: ' + err.message, 'error');
-      return;
-    }
-
-    // Open progress overlay
-    document.getElementById('sendPhoneTitle').textContent    = 'Waiting for ' + peer.alias + '…';
+    // Show overlay immediately (before any async work)
+    document.getElementById('sendPhoneTitle').textContent    = 'Requesting ' + peer.alias + '…';
     document.getElementById('sendPhoneFile').textContent     = selectedFile.name;
     document.getElementById('sendPhoneFill').style.width     = '0%';
     document.getElementById('sendPhoneStats').textContent    = 'Requesting acceptance…';
@@ -1236,27 +1242,135 @@
     document.getElementById('sendPhoneCloseBtn').style.display  = 'none';
     document.getElementById('sendPhoneOverlay').classList.add('visible');
     isTransferring = true;
+    isCancelled    = false;
+    abortCtrl      = new AbortController();
+
+    const peerBaseUrl  = peer.baseUrl || `http://${peer.ip}:${peer.port || 53317}`;
+    const fileId       = Math.random().toString(36).slice(2);
+    const CHUNK_BYTES  = 384 * 1024;   // 393 216 — divisible by 3 (see sendToPeer comment)
+    const total        = selectedFile.size;
+    const totalChunks  = Math.ceil(total / CHUNK_BYTES) || 1;
+    const ENCODE_STEP  = 8192;
 
     try {
-      const res = await fetch(`${LOCAL_URL}/send-to-phone`, {
+      // 1. POST /prepare-upload directly to the phone.
+      //    senderIP must be our LAN IP so the phone can POST /session-response back.
+      const prepBody = {
+        info: {
+          alias:       MY_NAME,
+          version:     '2.0',
+          deviceModel: navigator.platform,
+          deviceType:  'desktop',
+          fingerprint: MY_ID,
+          port:        53317,
+          protocol:    'http',
+          download:    true,
+          senderIP:    MY_LAN_IP,
+        },
+        files: {
+          [fileId]: {
+            id:       fileId,
+            fileName: selectedFile.name,
+            size:     total,
+            fileType: selectedFile.type || 'application/octet-stream',
+          },
+        },
+      };
+
+      const prepCtrl  = new AbortController();
+      const prepTimer = setTimeout(() => prepCtrl.abort(), 10000);
+      const prepRes   = await fetch(`${peerBaseUrl}/prepare-upload`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          peerIP:     peer.ip,
-          peerPort:   peer.port || 53317,
-          fileName:   selectedFile.name,
-          fileSize:   selectedFile.size,
-          fileType:   selectedFile.type || 'application/octet-stream',
-          fileBase64,
-          clientId:   sendToPhoneClientId,
-        }),
+        body:    JSON.stringify(prepBody),
+        signal:  prepCtrl.signal,
       });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      // Progress comes via socket.io 'send-to-phone-progress' — no need to await
+      clearTimeout(prepTimer);
+      if (!prepRes.ok) throw new Error(`Prepare failed: HTTP ${prepRes.status}`);
+      const prepData = await prepRes.json();
+      const { sessionId, files: tokens } = prepData;
+      const token = tokens[fileId];
+      if (!token) throw new Error('Phone sent no upload token');
+      sendToPhoneSession = sessionId;
+
+      // 2. Long-poll our own /wait-for-response endpoint.
+      //    The phone POSTs /session-response here when the user taps Accept/Decline.
+      document.getElementById('sendPhoneTitle').textContent = 'Waiting for ' + peer.alias + '…';
+      document.getElementById('sendPhoneStats').textContent = 'Waiting for acceptance…';
+      if (isCancelled) throw new Error('Cancelled');
+
+      const waitRes  = await fetch(
+        `${LOCAL_URL}/wait-for-response?sessionId=${encodeURIComponent(sessionId)}`,
+        { signal: abortCtrl.signal }
+      );
+      const waitData = await waitRes.json();
+      if (isCancelled) throw new Error('Cancelled');
+      if (waitData.timedOut || !waitData.accepted) {
+        throw new Error(waitData.timedOut
+          ? `No response from ${peer.alias} — timed out`
+          : 'Transfer declined');
+      }
+
+      // 3. Send directly to phone in 384 KB chunks
+      document.getElementById('sendPhoneTitle').textContent = 'Sending to ' + peer.alias + '…';
+      document.getElementById('sendPhoneStats').textContent  = 'Starting upload…';
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        if (isCancelled) throw new Error('Cancelled');
+
+        const start     = chunkIndex * CHUNK_BYTES;
+        const end       = Math.min(start + CHUNK_BYTES, total);
+        const sliceBuf  = await selectedFile.slice(start, end).arrayBuffer();
+        const uint8     = new Uint8Array(sliceBuf);
+
+        let binary = '';
+        for (let i = 0; i < uint8.length; i += ENCODE_STEP)
+          binary += String.fromCharCode(...uint8.subarray(i, i + ENCODE_STEP));
+        const b64 = btoa(binary);
+
+        const upRes = await fetch(`${peerBaseUrl}/upload`, {
+          method:  'POST',
+          headers: {
+            'Content-Type':   'text/plain',
+            'X-File-Name':    encodeURIComponent(selectedFile.name),
+            'X-Session-Id':   sessionId,
+            'X-File-Id':      fileId,
+            'X-Token':        token,
+            'X-Chunk-Index':  String(chunkIndex),
+            'X-Total-Chunks': String(totalChunks),
+          },
+          body:   b64,
+          signal: abortCtrl.signal,
+        });
+        if (!upRes.ok)
+          throw new Error(`Chunk ${chunkIndex + 1}/${totalChunks} failed: HTTP ${upRes.status}`);
+
+        const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+        document.getElementById('sendPhoneFill').style.width  = pct + '%';
+        document.getElementById('sendPhoneStats').textContent =
+          `${pct}% — ${fmtSize(end)} of ${fmtSize(total)}`;
+      }
+
+      // Done
+      document.getElementById('sendPhoneTitle').textContent  = '✓ Sent to ' + peer.alias;
+      document.getElementById('sendPhoneFill').style.width   = '100%';
+      document.getElementById('sendPhoneStats').textContent  = fmtSize(total) + ' sent';
+      document.getElementById('sendPhoneCancelBtn').style.display = 'none';
+      document.getElementById('sendPhoneCloseBtn').style.display  = 'block';
+      showStatus('✓ File sent to phone!', 'success');
     } catch (err) {
-      isTransferring = false;
-      showStatus('❌ Could not start send: ' + err.message, 'error');
-      closeSendPhoneProgress();
+      if (!isCancelled) {
+        document.getElementById('sendPhoneTitle').textContent = '❌ Failed';
+        document.getElementById('sendPhoneStats').textContent = err.message;
+        document.getElementById('sendPhoneCancelBtn').style.display = 'none';
+        document.getElementById('sendPhoneCloseBtn').style.display  = 'block';
+        showStatus('❌ Send to phone failed: ' + err.message, 'error');
+      }
+    } finally {
+      isTransferring      = false;
+      sendToPhoneSession  = null;
+      sendToPhoneClientId = null;
+      sendToPhonePeer     = null;
     }
   }
 
@@ -1265,23 +1379,25 @@
     isTransferring      = false;
     sendToPhoneSession  = null;
     sendToPhoneClientId = null;
+    sendToPhonePeer     = null;
   }
 
   async function cancelSendToPhone() {
     if (!confirm('Cancel this transfer?')) return;
     isCancelled = true;
-    // Send clientId — it's registered with the backend from the moment
-    // sendToPhone() fires, so this works even if Cancel is tapped before
-    // the real sessionId comes back over socket.io (previously this sent
-    // sessionId, which was still null at that point, so the cancel request
-    // matched nothing and the transfer kept going).
-    try {
-      await fetch(`${LOCAL_URL}/cancel-send-to-phone`, {
+    abortCtrl?.abort();   // stop any in-flight fetch immediately
+
+    // Tell the phone to drop the session so it cleans up and can accept future transfers
+    if (sendToPhoneSession && sendToPhonePeer) {
+      const url = sendToPhonePeer.baseUrl
+        || `http://${sendToPhonePeer.ip}:${sendToPhonePeer.port || 53317}`;
+      fetch(`${url}/cancel`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ clientId: sendToPhoneClientId || null }),
-      });
-    } catch (_) {}
+        body:    JSON.stringify({ sessionId: sendToPhoneSession }),
+      }).catch(() => {});
+    }
+
     closeSendPhoneProgress();
     showStatus('Transfer cancelled', 'info');
   }

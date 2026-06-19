@@ -420,21 +420,51 @@ export class LocalServer {
     session: PendingSession,
   ): Promise<void> {
     const dest = `${FileSystem.cacheDirectory}${sessionId}_${safeName}`;
-    let assembled = '';
 
+    // ── Streaming assembly — one chunk in memory at a time ────────────────────
+    //
+    // OLD approach: accumulated ALL chunk base64 strings into one giant `assembled`
+    // variable, then wrote it. For a 1 GB file that's ~1.33 GB of JS strings in
+    // the heap → OOM crash, exactly like the readAsStringAsync-full-file bug in
+    // localClient.ts.
+    //
+    // NEW approach: write chunk 0 as the destination file, then append each
+    // subsequent chunk's decoded bytes directly. Peak memory is one chunk's base64
+    // string (~512 KB for a 384 KB raw chunk), regardless of total file size.
+    //
+    // CRITICAL PRECONDITION: every chunk except the last must be exactly
+    // CHUNK_BYTES raw bytes, where CHUNK_BYTES is divisible by 3. This ensures
+    // the base64 re-encoding of each temp-file has NO trailing '=' padding.
+    // appendAsStringAsync decodes each base64 segment and appends the raw bytes;
+    // if an intermediate segment ends with '=', Android's decoder treats it as
+    // end-of-stream and drops every byte that follows, corrupting the file.
+    // Both senders (localClient.ts and local.html) now use CHUNK_BYTES = 384 * 1024
+    // = 393 216 = 131 072 × 3, satisfying this requirement.
     for (let i = 0; i < totalChunks; i++) {
       const partPath = `${FileSystem.cacheDirectory}${sessionId}_${fileId}_chunk${i}`;
-      const part = await FileSystem.readAsStringAsync(partPath, {
+
+      // Re-read chunk temp file as base64. Since CHUNK_BYTES % 3 === 0 for all
+      // but the last chunk, this produces a clean base64 string (no '=' padding).
+      const partBase64 = await FileSystem.readAsStringAsync(partPath, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      assembled += part;
-      // Delete chunk temp file immediately to free space
+
+      if (i === 0) {
+        // Create the destination file with chunk 0's decoded bytes.
+        await FileSystem.writeAsStringAsync(dest, partBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } else {
+        // Decode partBase64 and append the raw bytes to the destination file.
+        // appendAsStringAsync is available in expo-file-system ≥ 16 (Expo SDK ≥ 51).
+        await (FileSystem as any).appendAsStringAsync(dest, partBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      }
+
+      // Delete the temp chunk immediately — frees disk space as we go.
       await FileSystem.deleteAsync(partPath, { idempotent: true });
     }
-
-    await FileSystem.writeAsStringAsync(dest, assembled, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
 
     console.log('[LocalServer] file assembled and saved:', dest);
 
